@@ -4,7 +4,6 @@ import (
     "context"
     "encoding/binary"
     "errors"
-    "fmt"
     "math"
     "net"
     "sync"
@@ -154,36 +153,49 @@ func (l *Link) Read() (packet *Packet, err error) {
 func (l *Link) Write(b []byte) (int, error) {
     switch l.Status {
     case ESTAB, CLOSE_WAIT:
-        if len(b) > math.MaxUint16 {
-            return 0, fmt.Errorf("bytes length %d > %d", len(b), math.MaxUint16)
+        var (
+            lastB   []byte
+            smaller bool
+        )
+
+        for {
+            if len(b) > math.MaxUint16 {
+                b, lastB = b[:math.MaxUint16], b[math.MaxUint16:]
+            } else {
+                smaller = true
+            }
+
+            packet := Packet{
+                ID:      l.ID,
+                PSH:     true,
+                Payload: b,
+                Length:  uint16(len(b)),
+            }
+
+            l.semaphore.Acquire(l.ctx, int64(len(b)))
+            select {
+            case <-l.ctx.Done():
+                return 0, errors.New("link can't write again")
+
+            default:
+            }
+
+            l.writtenSize <- int64(len(b))
+
+            _, err := l.lowLevel.Write(packet.Bytes())
+            if err != nil {
+                l.Status = RST
+                l.closeReadChan()
+                l.ctxCancelFunc()
+                return 0, RST
+            }
+
+            if smaller {
+                return len(b), nil
+            } else {
+                b = lastB
+            }
         }
-
-        packet := Packet{
-            ID:      l.ID,
-            PSH:     true,
-            Payload: b,
-            Length:  uint16(len(b)),
-        }
-
-        l.semaphore.Acquire(l.ctx, int64(len(b)))
-        select {
-        case <-l.ctx.Done():
-            return 0, errors.New("link can't write again")
-
-        default:
-        }
-
-        l.writtenSize <- int64(len(b))
-
-        _, err := l.lowLevel.Write(packet.Bytes())
-        if err != nil {
-            l.Status = RST
-            l.closeReadChan()
-            l.ctxCancelFunc()
-            return 0, RST
-        }
-
-        return len(b), nil
 
     default:
         return 0, l.Status
