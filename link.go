@@ -49,9 +49,8 @@ func (l *Link) read() {
             n, err := l.lowLevel.Read(b[length:])
             if err != nil {
                 l.Status = RST
-                l.readBuf.Reset()
                 l.ctxCancelFunc()
-
+                l.cond.Signal()
                 break
             }
             length += n
@@ -67,8 +66,8 @@ func (l *Link) read() {
                 n, err := l.lowLevel.Read(payload[length:])
                 if err != nil {
                     l.Status = RST
-                    l.readBuf.Reset()
                     l.ctxCancelFunc()
+                    l.cond.Signal()
                     break
                 }
                 length += n
@@ -82,8 +81,8 @@ func (l *Link) read() {
             l.Status = RST
             rst := Packet{ID: l.ID, RST: true}
             l.lowLevel.Write(rst.Bytes())
-            l.readBuf.Reset()
             l.ctxCancelFunc()
+            l.cond.Signal()
             break
         }
 
@@ -117,8 +116,8 @@ func (l *Link) read() {
 
         if packet.RST {
             l.Status = RST
-            l.readBuf.Reset()
             l.ctxCancelFunc()
+            l.cond.Signal()
             break
         }
     }
@@ -140,6 +139,10 @@ func (l *Link) Read(b []byte) (n int, err error) {
     case ESTAB, FIN_WAIT:
         if l.readBuf.Len() == 0 {
             l.cond.Wait()
+        }
+
+        if l.Status == RST {
+            return 0, RST
         }
 
         l.readMutex.Lock()
