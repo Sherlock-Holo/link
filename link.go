@@ -1,9 +1,11 @@
 package link
 
 import (
+    "bytes"
     "context"
     "encoding/binary"
     "errors"
+    "io"
     "math"
     "net"
     "sync"
@@ -12,27 +14,25 @@ import (
     "golang.org/x/sync/semaphore"
 )
 
+const (
+    maxBufSize = 1 << 18
+)
+
 type Link struct {
-    ID     uuid.UUID
-    Status error
+    ID     uuid.UUID // *
+    Status error     // *
 
-    mutex    sync.Mutex
-    lowLevel net.Conn
+    lowLevel net.Conn // *
 
-    closed       bool
-    readableChan chan *Packet
-    writtenSize  chan int64
+    closed    bool
+    readMutex sync.Mutex
+    readBuf   *bytes.Buffer // *
+    locker    sync.Mutex    // *
+    cond      *sync.Cond    // *
 
     semaphore     *semaphore.Weighted // wind
-    ctx           context.Context
-    ctxCancelFunc context.CancelFunc
-}
-
-func (l *Link) closeReadChan() {
-    if !l.closed {
-        l.closed = true
-        close(l.readableChan)
-    }
+    ctx           context.Context     // *
+    ctxCancelFunc context.CancelFunc  // *
 }
 
 func (l *Link) read() {
@@ -49,8 +49,8 @@ func (l *Link) read() {
             n, err := l.lowLevel.Read(b[length:])
             if err != nil {
                 l.Status = RST
+                l.readBuf.Reset()
                 l.ctxCancelFunc()
-                l.closeReadChan()
 
                 break
             }
@@ -67,7 +67,7 @@ func (l *Link) read() {
                 n, err := l.lowLevel.Read(payload[length:])
                 if err != nil {
                     l.Status = RST
-                    l.closeReadChan()
+                    l.readBuf.Reset()
                     l.ctxCancelFunc()
                     break
                 }
@@ -82,13 +82,17 @@ func (l *Link) read() {
             l.Status = RST
             rst := Packet{ID: l.ID, RST: true}
             l.lowLevel.Write(rst.Bytes())
-            l.closeReadChan()
+            l.readBuf.Reset()
             l.ctxCancelFunc()
             break
         }
 
         if packet.PSH {
-            l.readableChan <- packet
+            l.readMutex.Lock()
+            l.readBuf.Write(packet.Payload)
+            l.readMutex.Unlock()
+
+            l.cond.Signal()
             continue
         }
 
@@ -96,58 +100,70 @@ func (l *Link) read() {
             switch l.Status {
             case ESTAB:
                 l.Status = CLOSE_WAIT
-                l.closeReadChan()
                 continue
 
             case FIN_WAIT:
                 l.Status = CLOSED
-                l.closeReadChan()
                 l.ctxCancelFunc()
                 break
             }
         }
 
         if packet.ACK {
-            l.semaphore.Release(<-l.writtenSize)
+            size := binary.BigEndian.Uint32(packet.Payload)
+            l.semaphore.Release(int64(size))
             continue
         }
 
         if packet.RST {
             l.Status = RST
-            l.closeReadChan()
+            l.readBuf.Reset()
             l.ctxCancelFunc()
             break
         }
     }
 }
 
-func (l *Link) Read() (packet *Packet, err error) {
+func (l *Link) Read(b []byte) (n int, err error) {
     switch l.Status {
-    case ESTAB, FIN_WAIT:
-        packet, err = <-l.readableChan, nil
+    case RST:
+        return 0, RST
 
-        if packet == nil {
-            return nil, l.Status
+    case CLOSE_WAIT, CLOSED:
+        if l.readBuf.Len() == 0 {
+            return 0, io.EOF
+        } else {
+            n, err = l.readBuf.Read(b)
+            return
         }
 
-    default:
-        return nil, l.Status
+    case ESTAB, FIN_WAIT:
+        if l.readBuf.Len() == 0 {
+            l.cond.Wait()
+        }
+
+        l.readMutex.Lock()
+        n, err = l.readBuf.Read(b)
+        l.readMutex.Unlock()
     }
 
     go func() {
+        size := make([]byte, 4)
+        binary.BigEndian.PutUint32(size, uint32(n))
         ack := Packet{
-            ID:  l.ID,
-            ACK: true,
+            ID:      l.ID,
+            ACK:     true,
+            Payload: size,
+            Length:  4,
         }
         _, err := l.lowLevel.Write(ack.Bytes())
         if err != nil {
             l.Status = RST
             l.ctxCancelFunc()
-            l.closeReadChan()
         }
     }()
 
-    return
+    return n, err
 }
 
 func (l *Link) Write(b []byte) (int, error) {
@@ -180,12 +196,9 @@ func (l *Link) Write(b []byte) (int, error) {
             default:
             }
 
-            l.writtenSize <- int64(len(b))
-
             _, err := l.lowLevel.Write(packet.Bytes())
             if err != nil {
                 l.Status = RST
-                l.closeReadChan()
                 l.ctxCancelFunc()
                 return 0, RST
             }
@@ -213,7 +226,6 @@ func (l *Link) CloseWrite() error {
         _, err := l.lowLevel.Write(fin.Bytes())
         if err != nil {
             l.Status = RST
-            l.closeReadChan()
             l.ctxCancelFunc()
             return RST
         }
@@ -231,7 +243,6 @@ func (l *Link) CloseWrite() error {
         _, err := l.lowLevel.Write(fin.Bytes())
         if err != nil {
             l.Status = RST
-            l.closeReadChan()
             l.ctxCancelFunc()
             return RST
         }
@@ -258,7 +269,6 @@ func (l *Link) Close() error {
 
         l.lowLevel.Write(rst.Bytes())
         l.Status = RST
-        l.closeReadChan()
         l.ctxCancelFunc()
         return RST
     }

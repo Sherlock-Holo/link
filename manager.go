@@ -8,6 +8,8 @@ import (
 
     "github.com/satori/go.uuid"
     "golang.org/x/sync/semaphore"
+    "bytes"
+    "sync"
 )
 
 type Manager struct {
@@ -44,15 +46,19 @@ func (m *Manager) Accept() (*Link, error) {
 
     ctx, cancelFunc := context.WithCancel(context.Background())
 
+    mutex := sync.Mutex{}
+    mutex.Lock()
+    
     link := &Link{
         ID:            synPacket.ID,
         Status:        SYN,
+        lowLevel:      m.lowLevel,
+        readBuf:       bytes.NewBuffer(nil),
+        locker:        mutex,
+        cond:          sync.NewCond(&mutex),
+        semaphore:     semaphore.NewWeighted(math.MaxUint16),
         ctx:           ctx,
         ctxCancelFunc: cancelFunc,
-        lowLevel:      m.lowLevel,
-        readableChan:  make(chan *Packet, 1000),
-        writtenSize:   make(chan int64, 1000),
-        semaphore:     semaphore.NewWeighted(math.MaxUint16),
     }
 
     ackPacket := Packet{
@@ -107,13 +113,17 @@ func (m *Manager) Connect(id uuid.UUID) (*Link, error) {
 
     ctx, cancelFunc := context.WithCancel(context.Background())
 
+    mutex := sync.Mutex{}
+    mutex.Lock()
+
     link := &Link{
         ID:            id,
-        lowLevel:      m.lowLevel,
         Status:        ESTAB,
+        lowLevel:      m.lowLevel,
+        readBuf:       bytes.NewBuffer(nil),
+        locker:        mutex,
+        cond:          sync.NewCond(&mutex),
         semaphore:     semaphore.NewWeighted(math.MaxUint16),
-        writtenSize:   make(chan int64, 1000),
-        readableChan:  make(chan *Packet, 1000),
         ctx:           ctx,
         ctxCancelFunc: cancelFunc,
     }
