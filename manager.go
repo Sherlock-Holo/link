@@ -1,15 +1,14 @@
 package link
 
 import (
+    "bytes"
     "context"
     "errors"
-    "math"
     "net"
+    "sync"
 
     "github.com/satori/go.uuid"
     "golang.org/x/sync/semaphore"
-    "bytes"
-    "sync"
 )
 
 type Manager struct {
@@ -48,7 +47,7 @@ func (m *Manager) Accept() (*Link, error) {
 
     mutex := sync.Mutex{}
     mutex.Lock()
-    
+
     link := &Link{
         ID:            synPacket.ID,
         Status:        SYN,
@@ -56,7 +55,7 @@ func (m *Manager) Accept() (*Link, error) {
         readBuf:       bytes.NewBuffer(nil),
         locker:        mutex,
         cond:          sync.NewCond(&mutex),
-        semaphore:     semaphore.NewWeighted(math.MaxUint16),
+        semaphore:     semaphore.NewWeighted(maxBufSize),
         ctx:           ctx,
         ctxCancelFunc: cancelFunc,
     }
@@ -123,7 +122,7 @@ func (m *Manager) Connect(id uuid.UUID) (*Link, error) {
         readBuf:       bytes.NewBuffer(nil),
         locker:        mutex,
         cond:          sync.NewCond(&mutex),
-        semaphore:     semaphore.NewWeighted(math.MaxUint16),
+        semaphore:     semaphore.NewWeighted(maxBufSize),
         ctx:           ctx,
         ctxCancelFunc: cancelFunc,
     }
