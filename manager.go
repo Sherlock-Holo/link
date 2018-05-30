@@ -47,6 +47,8 @@ func (manager *Manager) read() {
             n, err := manager.lowLevel.Read(b[length:])
             // notify all link: manager is error
             if err != nil {
+                log.Println(err)
+                manager.err = err
                 for _, link := range manager.m {
                     go func(link *Link) {
                         link.Status = RST
@@ -69,6 +71,8 @@ func (manager *Manager) read() {
                 n, err := manager.lowLevel.Read(payload[length:])
                 // notify all link: manager is error
                 if err != nil {
+                    log.Println(err)
+                    manager.err = err
                     for _, link := range manager.m {
                         go func(link *Link) {
                             link.Status = RST
@@ -87,6 +91,8 @@ func (manager *Manager) read() {
         packet, err := Decode(b)
         // notify all link: manager is error
         if err != nil {
+            log.Println(err)
+            manager.err = err
             for _, link := range manager.m {
                 go func(link *Link) {
                     link.Status = RST
@@ -120,6 +126,8 @@ func (manager *Manager) read() {
                 ctxCancelFunc: cancelFunc,
             }
 
+            link.readChan <- packet
+
             manager.m[link.ID] = &link
             manager.acceptChan <- &link
         }
@@ -151,7 +159,7 @@ func (manager *Manager) Accept() (*Link, error) {
 }
 
 func (manager *Manager) NewLink(b []byte) (*Link, error) {
-    if manager.err == nil {
+    if manager.err != nil {
         return nil, manager.err
     }
 

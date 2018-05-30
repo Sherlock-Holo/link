@@ -140,6 +140,10 @@ func (l *Link) Read(b []byte) (n int, err error) {
 func (l *Link) Write(b []byte) (int, error) {
     switch l.Status {
     case ESTAB, CLOSE_WAIT:
+        if b == nil {
+            return 0, nil
+        }
+
         var (
             lastB   []byte
             smaller bool
