@@ -171,12 +171,6 @@ func (l *Link) Write(b []byte) (int, error) {
             default:
             }
 
-            /*_, err := l.lowLevel.Write(packet.Bytes())
-              if err != nil {
-                  l.Status = RST
-                  l.ctxCancelFunc()
-                  return 0, RST
-              }*/
             l.manager.writeChan <- &packet
 
             if smaller {
@@ -199,12 +193,6 @@ func (l *Link) CloseWrite() error {
             FIN: true,
         }
 
-        /*_, err := l.lowLevel.Write(fin.Bytes())
-          if err != nil {
-              l.Status = RST
-              l.ctxCancelFunc()
-              return RST
-          }*/
         l.manager.writeChan <- &fin
 
         l.Status = FIN_WAIT
@@ -217,12 +205,6 @@ func (l *Link) CloseWrite() error {
             FIN: true,
         }
 
-        /*_, err := l.lowLevel.Write(fin.Bytes())
-          if err != nil {
-              l.Status = RST
-              l.ctxCancelFunc()
-              return RST
-          }*/
         l.manager.writeChan <- &fin
 
         l.Status = CLOSED
@@ -231,7 +213,13 @@ func (l *Link) CloseWrite() error {
         l.removeFromManager()
         return nil
 
+    case FIN_WAIT:
+        return nil
+
     default:
+        l.ctxCancelFunc()
+        l.closeReadChan()
+        l.removeFromManager()
         return l.Status
     }
 }
@@ -247,7 +235,6 @@ func (l *Link) Close() error {
             RST: true,
         }
 
-        // l.lowLevel.Write(rst.Bytes())
         l.manager.writeChan <- &rst
         l.Status = RST
         l.ctxCancelFunc()
