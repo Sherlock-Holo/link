@@ -11,4 +11,6 @@ var (
     CLOSE_WAIT = errors.New("CLOSE_WAIT")
     CLOSED     = errors.New("CLOSED")
     RST        = errors.New("RST")
+
+    LowLevelErr = errors.New("low level stream error")
 )

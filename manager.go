@@ -48,10 +48,10 @@ func (manager *Manager) read() {
             // notify all link: manager is error
             if err != nil {
                 log.Println(err)
-                manager.err = err
+                manager.err = LowLevelErr
                 for _, link := range manager.m {
                     go func(link *Link) {
-                        link.Status = RST
+                        link.Status = LowLevelErr
                         link.ctxCancelFunc()
                         link.cond.Signal()
                     }(link)
@@ -72,10 +72,10 @@ func (manager *Manager) read() {
                 // notify all link: manager is error
                 if err != nil {
                     log.Println(err)
-                    manager.err = err
+                    manager.err = LowLevelErr
                     for _, link := range manager.m {
                         go func(link *Link) {
-                            link.Status = RST
+                            link.Status = LowLevelErr
                             link.ctxCancelFunc()
                             link.cond.Signal()
                         }(link)
@@ -139,7 +139,14 @@ func (manager *Manager) write() {
         _, err := manager.lowLevel.Write(packet.Bytes())
         if err != nil {
             log.Println(err)
-            manager.err = err
+            manager.err = LowLevelErr
+            for _, link := range manager.m {
+                go func(link *Link) {
+                    link.Status = LowLevelErr
+                    link.ctxCancelFunc()
+                    link.cond.Signal()
+                }(link)
+            }
             break
         }
     }
