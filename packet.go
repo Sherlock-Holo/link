@@ -5,11 +5,27 @@ import (
     "fmt"
 
     "github.com/satori/go.uuid"
+    "github.com/pkg/errors"
+    "strings"
 )
 
 const (
     HeaderLength = 20
 )
+
+type PacketHeader []byte
+
+func (h PacketHeader) ID() (uuid.UUID, error) {
+    id, err := uuid.FromBytes(h[:16])
+    if err != nil {
+        return uuid.UUID{}, errors.Wrap(err, "uuid decode")
+    }
+    return id, nil
+}
+
+func (h PacketHeader) PayloadLength() int {
+    return int(binary.BigEndian.Uint16(h[18:]))
+}
 
 // [header 20 bytes] [payload <=65535 bytes]
 type Packet struct {
@@ -24,6 +40,39 @@ type Packet struct {
 
     Length  uint16
     Payload []byte
+}
+
+func newPacket(id uuid.UUID, status string, payload []byte) *Packet {
+    packet := Packet{
+        ID: id,
+    }
+
+    switch strings.ToUpper(status) {
+    case "SYN":
+        packet.SYN = true
+
+    case "ACK":
+        packet.ACK = true
+
+    case "PSH":
+        packet.PSH = true
+
+    case "FIN":
+        packet.FIN = true
+
+    case "RST":
+        packet.RST = true
+
+    default:
+        panic("not allow status " + status)
+    }
+
+    if payload != nil {
+        packet.Payload = payload
+        packet.Length = uint16(len(payload))
+    }
+
+    return &packet
 }
 
 func (p *Packet) Bytes() []byte {

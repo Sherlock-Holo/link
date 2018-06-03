@@ -3,14 +3,12 @@ package link
 import (
     "bytes"
     "context"
-    "encoding/binary"
-    "errors"
-    "io"
-    "math"
     "sync"
 
     "github.com/satori/go.uuid"
     "golang.org/x/sync/semaphore"
+    "io"
+    "encoding/binary"
 )
 
 const (
@@ -18,228 +16,205 @@ const (
 )
 
 type Link struct {
-    ID     uuid.UUID // *
-    Status error     // *
+    ID uuid.UUID // *
 
-    manager       *Manager // *
-    readChan      chan *Packet
-    readChanClose bool
+    readClosed  chan struct{}
+    writeClosed chan struct{}
 
-    closed    bool
-    readMutex sync.Mutex
-    readBuf   *bytes.Buffer // *
-    locker    sync.Mutex    // *
-    cond      *sync.Cond    // *
+    die     chan struct{}
+    dieLock sync.Mutex
 
-    semaphore     *semaphore.Weighted // wind
-    ctx           context.Context     // *
-    ctxCancelFunc context.CancelFunc  // *
+    manager *Manager // *
+
+    buf       bytes.Buffer // *
+    bufLock   sync.Mutex
+    readEvent chan struct{} // size 1
+
+    writeSemaphore     *semaphore.Weighted // wind
+    writeCtx           context.Context     // *
+    writeCtxCancelFunc context.CancelFunc  // *
 }
 
-func (l *Link) closeReadChan() {
-    if !l.readChanClose {
-        close(l.readChan)
+func newLink(id uuid.UUID, m *Manager) *Link {
+    ctx, cancelFunc := context.WithCancel(context.Background())
+
+    return &Link{
+        ID: id,
+
+        readClosed:  make(chan struct{}),
+        writeClosed: make(chan struct{}),
+
+        die: make(chan struct{}),
+
+        manager: m,
+
+        readEvent: make(chan struct{}, 1),
+
+        writeSemaphore:     semaphore.NewWeighted(maxBufSize),
+        writeCtx:           ctx,
+        writeCtxCancelFunc: cancelFunc,
     }
 }
 
-func (l *Link) removeFromManager() {
-    delete(l.manager.m, l.ID)
+func (l *Link) pushBytes(p []byte) {
+    l.bufLock.Lock()
+    l.buf.Write(p)
+    l.bufLock.Unlock()
+
+    l.NotifyReadEvent()
 }
 
-func (l *Link) read() {
-    for packet := range l.readChan {
-        if l.Status == CLOSED || l.Status == RST {
-            l.ctxCancelFunc()
-            l.closeReadChan()
-            l.removeFromManager()
-            break
-        }
-
-        if packet.PSH {
-            l.readMutex.Lock()
-            l.readBuf.Write(packet.Payload)
-            l.readMutex.Unlock()
-
-            l.cond.Signal()
-            continue
-        }
-
-        if packet.FIN {
-            switch l.Status {
-            case ESTAB:
-                l.Status = CLOSE_WAIT
-                continue
-
-            case FIN_WAIT:
-                l.Status = CLOSED
-                l.ctxCancelFunc()
-                l.closeReadChan()
-                l.removeFromManager()
-                break
-            }
-        }
-
-        if packet.ACK {
-            size := binary.BigEndian.Uint32(packet.Payload)
-            l.semaphore.Release(int64(size))
-            continue
-        }
-
-        if packet.RST {
-            l.Status = RST
-            l.ctxCancelFunc()
-            l.closeReadChan()
-            l.removeFromManager()
-            l.cond.Signal()
-            break
-        }
+func (l *Link) NotifyReadEvent() {
+    select {
+    case l.readEvent <- struct{}{}:
+    default:
     }
 }
 
-func (l *Link) Read(b []byte) (n int, err error) {
-    switch l.Status {
-    case RST:
-        return 0, RST
+func (l *Link) Read(p []byte) (n int, err error) {
+    select {
+    case <-l.manager.die:
+        return 0, LowLevelErr
 
-    case CLOSE_WAIT, CLOSED:
-        if l.readBuf.Len() == 0 {
-            return 0, io.EOF
-        } else {
-            n, err = l.readBuf.Read(b)
-            return
+    case <-l.readClosed:
+        if l.buf.Len() != 0 {
+            n, _ = l.buf.Read(p)
+        }
+        select {
+        case <-l.writeClosed:
+            return n, CLOSED
+        default:
+            return n, CLOSE_WAIT
         }
 
-    case ESTAB, FIN_WAIT:
-        if l.readBuf.Len() == 0 {
-            l.cond.Wait()
-        }
+    case <-l.readEvent:
+        l.bufLock.Lock()
+        n, err = l.buf.Read(p)
+        l.bufLock.Unlock()
 
-        if l.Status == RST {
-            return 0, RST
-        }
-
-        l.readMutex.Lock()
-        n, err = l.readBuf.Read(b)
-        l.readMutex.Unlock()
-    }
-
-    size := make([]byte, 4)
-    binary.BigEndian.PutUint32(size, uint32(n))
-    ack := Packet{
-        ID:      l.ID,
-        ACK:     true,
-        Payload: size,
-        Length:  4,
-    }
-
-    l.manager.writeChan <- &ack
-
-    return n, err
-}
-
-func (l *Link) Write(b []byte) (int, error) {
-    switch l.Status {
-    case ESTAB, CLOSE_WAIT:
-        if b == nil {
-            return 0, nil
-        }
-
-        var (
-            lastB   []byte
-            smaller bool
-        )
-
-        for {
-            if len(b) > math.MaxUint16 {
-                b, lastB = b[:math.MaxUint16], b[math.MaxUint16:]
-            } else {
-                smaller = true
-            }
-
-            packet := Packet{
-                ID:      l.ID,
-                PSH:     true,
-                Payload: b,
-                Length:  uint16(len(b)),
-            }
-
-            l.semaphore.Acquire(l.ctx, int64(len(b)))
+        if l.buf.Len() != 0 {
             select {
-            case <-l.ctx.Done():
-                return 0, errors.New("link can't write again")
-
+            case l.readEvent <- struct{}{}:
             default:
             }
+        }
 
-            l.manager.writeChan <- &packet
+        go func() {
+            b := make([]byte, 4)
+            binary.BigEndian.PutUint32(b, uint32(n))
 
-            if smaller {
-                return len(b), nil
-            } else {
-                b = lastB
+            if err := l.manager.writePacket(newPacket(l.ID, "ACK", b)); err != nil {
+                l.rst()
             }
+        }()
+        return
+    }
+}
+
+func (l *Link) Write(p []byte) (n int, err error) {
+    select {
+    case <-l.manager.die:
+        return 0, LowLevelErr
+
+    case <-l.writeClosed:
+        select {
+        case <-l.readClosed:
+            return 0, CLOSED
+        default:
+            return 0, FIN_WAIT
         }
 
     default:
-        return 0, l.Status
+        l.writeSemaphore.Acquire(l.writeCtx, int64(len(p)))
+
+        select {
+        case <-l.writeCtx.Done():
+            return 0, io.ErrClosedPipe
+        default:
+            if err := l.manager.writePacket(newPacket(l.ID, "PSH", p)); err != nil {
+                return 0, err
+            }
+
+            return len(p), nil
+        }
     }
+}
+
+func (l *Link) ack(size uint32) {
+    select {
+    case <-l.writeClosed:
+    default:
+        l.writeSemaphore.Release(int64(size))
+    }
+}
+
+func (l *Link) rst() {
+    select {
+    case <-l.readClosed:
+    default:
+        close(l.readClosed)
+    }
+
+    select {
+    case <-l.writeClosed:
+    default:
+        close(l.writeClosed)
+        l.writeCtxCancelFunc()
+    }
+
+    select {
+    case <-l.die:
+    default:
+        close(l.die)
+    }
+
+    l.manager.removeLink(l.ID)
 }
 
 func (l *Link) CloseWrite() error {
-    switch l.Status {
-    case ESTAB:
-        fin := Packet{
-            ID:  l.ID,
-            FIN: true,
-        }
+    l.writeCtxCancelFunc()
 
-        l.manager.writeChan <- &fin
-
-        l.Status = FIN_WAIT
-        l.ctxCancelFunc()
-        return nil
-
-    case CLOSE_WAIT:
-        fin := Packet{
-            ID:  l.ID,
-            FIN: true,
-        }
-
-        l.manager.writeChan <- &fin
-
-        l.Status = CLOSED
-        l.ctxCancelFunc()
-        l.closeReadChan()
-        l.removeFromManager()
-        return nil
-
-    case FIN_WAIT:
-        return nil
-
+    select {
+    case <-l.die:
+        l.manager.removeLink(l.ID)
+        return RST
     default:
-        l.ctxCancelFunc()
-        l.closeReadChan()
-        l.removeFromManager()
-        return l.Status
+        select {
+        case <-l.readClosed:
+            l.manager.removeLink(l.ID)
+        default:
+        }
+
+        select {
+        case <-l.writeClosed:
+            return nil
+
+        default:
+            close(l.writeClosed)
+            return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
+        }
     }
 }
 
-func (l *Link) Close() error {
-    switch l.Status {
-    case CLOSE_WAIT:
-        return l.CloseWrite()
-
+func (l *Link) CloseRead() error {
+    select {
+    case <-l.die:
+        l.manager.removeLink(l.ID)
+        return RST
     default:
-        rst := Packet{
-            ID:  l.ID,
-            RST: true,
+        select {
+        case <-l.writeClosed:
+            l.manager.removeLink(l.ID)
+        default:
         }
 
-        l.manager.writeChan <- &rst
-        l.Status = RST
-        l.ctxCancelFunc()
-        l.closeReadChan()
-        l.removeFromManager()
-        return RST
+        select {
+        case <-l.readClosed:
+            return nil
+
+        default:
+            close(l.readClosed)
+            return nil
+        }
     }
 }
