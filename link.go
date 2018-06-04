@@ -166,6 +166,12 @@ func (l *Link) ack(size uint32) {
 
 func (l *Link) rst() {
     select {
+    case <-l.die:
+    default:
+        close(l.die)
+    }
+
+    select {
     case <-l.readClosed:
     default:
         close(l.readClosed)
@@ -176,12 +182,6 @@ func (l *Link) rst() {
     default:
         close(l.writeClosed)
         l.writeCtxCancelFunc()
-    }
-
-    select {
-    case <-l.die:
-    default:
-        close(l.die)
     }
 
     l.manager.removeLink(l.ID)

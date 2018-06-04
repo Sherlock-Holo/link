@@ -82,7 +82,7 @@ func (m *Manager) writePacket(p *Packet) error {
 func (m *Manager) readLoop() {
     for {
         if m.IsClosed() {
-            break
+            return
         }
 
         packet, err := m.readPacket()
@@ -92,13 +92,14 @@ func (m *Manager) readLoop() {
             case <-m.die:
             default:
                 close(m.die)
-                // close all links
-                m.linksLock.Lock()
-                for _, link := range m.links {
-                    link.rst()
-                }
-                return
             }
+            // close all links
+            m.linksLock.Lock()
+            for _, link := range m.links {
+                link.rst()
+            }
+            m.linksLock.Unlock()
+            return
 
         }
 
@@ -119,7 +120,7 @@ func (m *Manager) readLoop() {
             m.linksLock.Lock()
             if link, ok := m.links[packet.ID]; ok {
                 if err := link.CloseRead(); err != nil {
-                    log.Printf("readLoop: %s", err)
+                    log.Printf("link %s CloseRead: %s", link.ID.String(), err)
                 }
             }
             m.linksLock.Unlock()
@@ -132,11 +133,11 @@ func (m *Manager) readLoop() {
             m.linksLock.Unlock()
 
         case packet.ACK:
-            m.linksLock.Lock()
+            // m.linksLock.Lock()
             if link, ok := m.links[packet.ID]; ok {
                 link.ack(binary.BigEndian.Uint32(packet.Payload))
             }
-            m.linksLock.Unlock()
+            // m.linksLock.Unlock()
         }
     }
 }
@@ -152,11 +153,16 @@ func (m *Manager) writeLoop() {
                 log.Println(err)
                 select {
                 case <-m.die:
-                    return
                 default:
                     close(m.die)
-                    return
                 }
+                // close all links
+                m.linksLock.Lock()
+                for _, link := range m.links {
+                    link.rst()
+                }
+                m.linksLock.Unlock()
+                return
             }
         }
     }
