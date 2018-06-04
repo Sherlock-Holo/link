@@ -82,7 +82,7 @@ func (m *Manager) removeLink(id uuid.UUID) {
 func (m *Manager) readLoop() {
     for {
         select {
-        case m.ctx.Done():
+        case <-m.ctx.Done():
             return
         default:
         }
@@ -149,4 +149,25 @@ func (m *Manager) writeLoop() {
 func (m *Manager) close() error {
     m.ctxCancelFunc()
     return nil
+}
+
+func (m *Manager) Accept() (*Link, error) {
+    select {
+    case <-m.ctx.Done():
+        return nil, io.ErrClosedPipe
+    case link := <-m.acceptQueue:
+        return link, nil
+    }
+}
+
+func (m *Manager) NewLink() (*Link, error) {
+    id, _ := uuid.NewV4()
+    link := newLink(id, m)
+
+    select {
+    case <-m.ctx.Done():
+        return nil, io.ErrClosedPipe
+    default:
+        return link, nil
+    }
 }
