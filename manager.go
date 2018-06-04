@@ -2,7 +2,6 @@ package link
 
 import (
     "io"
-    "github.com/satori/go.uuid"
     "sync"
     "fmt"
     "context"
@@ -13,8 +12,10 @@ import (
 type Manager struct {
     conn io.ReadWriteCloser
 
-    links     map[uuid.UUID]*Link
+    links     map[uint32]*Link
     linksLock sync.Mutex
+
+    maxID uint32
 
     ctx           context.Context
     ctxCancelFunc context.CancelFunc
@@ -30,7 +31,7 @@ func NewManager(conn io.ReadWriteCloser) *Manager {
     manager := &Manager{
         conn: conn,
 
-        links: make(map[uuid.UUID]*Link),
+        links: make(map[uint32]*Link),
 
         ctx:           ctx,
         ctxCancelFunc: cancelFunc,
@@ -75,7 +76,7 @@ func (m *Manager) writePacket(p *Packet) {
     }
 }
 
-func (m *Manager) removeLink(id uuid.UUID) {
+func (m *Manager) removeLink(id uint32) {
     delete(m.links, id)
 }
 
@@ -100,17 +101,23 @@ func (m *Manager) readLoop() {
 
         switch {
         case packet.PSH:
+            log.Println("PSH", packet.Length)
             m.linksLock.Lock()
             if link, ok := m.links[packet.ID]; ok {
                 link.pushBytes(packet.Payload)
             } else {
-                link := newLink(packet.ID, m)
-                link.pushBytes(packet.Payload)
-                m.acceptQueue <- link
+                if packet.ID > m.maxID {
+                    m.maxID = packet.ID
+
+                    link := newLink(packet.ID, m)
+                    link.pushBytes(packet.Payload)
+                    m.acceptQueue <- link
+                }
             }
             m.linksLock.Unlock()
 
         case packet.ACK:
+            log.Println("ACK", binary.BigEndian.Uint32(packet.Payload))
             if link, ok := m.links[packet.ID]; ok {
                 link.ack(binary.BigEndian.Uint32(packet.Payload))
             }
@@ -161,8 +168,8 @@ func (m *Manager) Accept() (*Link, error) {
 }
 
 func (m *Manager) NewLink() (*Link, error) {
-    id, _ := uuid.NewV4()
-    link := newLink(id, m)
+    m.maxID++
+    link := newLink(m.maxID, m)
 
     select {
     case <-m.ctx.Done():

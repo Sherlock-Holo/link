@@ -4,32 +4,26 @@ import (
     "encoding/binary"
     "fmt"
 
-    "github.com/satori/go.uuid"
-    "github.com/pkg/errors"
     "strings"
 )
 
 const (
-    HeaderLength = 20
+    HeaderLength = 4 + 2 + 2
 )
 
 type PacketHeader []byte
 
-func (h PacketHeader) ID() (uuid.UUID, error) {
-    id, err := uuid.FromBytes(h[:16])
-    if err != nil {
-        return uuid.UUID{}, errors.Wrap(err, "uuid decode")
-    }
-    return id, nil
+func (h PacketHeader) ID() uint32 {
+    return binary.BigEndian.Uint32(h[:4])
 }
 
 func (h PacketHeader) PayloadLength() int {
-    return int(binary.BigEndian.Uint16(h[18:]))
+    return int(binary.BigEndian.Uint16(h[6:]))
 }
 
 // [header 20 bytes] [payload <=65535 bytes]
 type Packet struct {
-    ID uuid.UUID
+    ID uint32
 
     // status 2 bytes
     SYN bool // 0b1000,0000,0000,0000
@@ -42,7 +36,7 @@ type Packet struct {
     Payload []byte
 }
 
-func newPacket(id uuid.UUID, status string, payload []byte) *Packet {
+func newPacket(id uint32, status string, payload []byte) *Packet {
     packet := Packet{
         ID: id,
     }
@@ -76,9 +70,11 @@ func newPacket(id uuid.UUID, status string, payload []byte) *Packet {
 }
 
 func (p *Packet) Bytes() []byte {
-    b := make([]byte, 0, HeaderLength)
+    /*b := make([]byte, 0, HeaderLength)
 
-    b = append(b, p.ID.Bytes()...)
+    b = append(b, p.ID.Bytes()...)*/
+    b := make([]byte, 4)
+    binary.BigEndian.PutUint32(b, p.ID)
 
     var status uint16
 
@@ -122,13 +118,9 @@ func Decode(b []byte) (*Packet, error) {
 
     p := new(Packet)
 
-    id, err := uuid.FromBytes(b[:16])
-    if err != nil {
-        return nil, err
-    }
-    p.ID = id
+    p.ID = binary.BigEndian.Uint32(b[:4])
 
-    status := binary.BigEndian.Uint16(b[16:18])
+    status := binary.BigEndian.Uint16(b[4:6])
 
     if status&(1<<15) != 0 {
         p.SYN = true
@@ -150,9 +142,11 @@ func Decode(b []byte) (*Packet, error) {
         p.RST = true
     }
 
-    p.Length = binary.BigEndian.Uint16(b[18:20])
+    p.Length = binary.BigEndian.Uint16(b[6:8])
 
-    p.Payload = b[20:]
+    if p.Length != 0 {
+        p.Payload = b[8:]
+    }
 
     return p, nil
 }

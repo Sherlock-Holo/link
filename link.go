@@ -5,7 +5,6 @@ import (
     "context"
     "sync"
 
-    "github.com/satori/go.uuid"
     "golang.org/x/sync/semaphore"
     "io"
     "encoding/binary"
@@ -16,7 +15,7 @@ const (
 )
 
 type Link struct {
-    ID uuid.UUID // *
+    ID uint32 // *
 
     ctx           context.Context    // *
     ctxCancelFunc context.CancelFunc // *
@@ -30,7 +29,7 @@ type Link struct {
     writeSemaphore *semaphore.Weighted // wind
 }
 
-func newLink(id uuid.UUID, m *Manager) *Link {
+func newLink(id uint32, m *Manager) *Link {
     ctx, cancelFunc := context.WithCancel(context.Background())
 
     return &Link{
@@ -50,9 +49,8 @@ func newLink(id uuid.UUID, m *Manager) *Link {
 func (l *Link) pushBytes(p []byte) {
     l.bufLock.Lock()
     l.buf.Write(p)
-    l.bufLock.Unlock()
-
     l.notifyReadEvent()
+    l.bufLock.Unlock()
 }
 
 func (l *Link) notifyReadEvent() {
@@ -93,15 +91,14 @@ func (l *Link) Read(p []byte) (n int, err error) {
         }
         l.bufLock.Unlock()
 
-        go func() {
-            select {
-            case <-l.ctx.Done():
-            default:
-                ack := make([]byte, 4)
-                binary.BigEndian.PutUint32(ack, uint32(n))
-                l.manager.writePacket(newPacket(l.ID, "ACK", ack))
-            }
-        }()
+        select {
+        case <-l.ctx.Done():
+            return n, io.ErrUnexpectedEOF
+        default:
+            ack := make([]byte, 4)
+            binary.BigEndian.PutUint32(ack, uint32(n))
+            l.manager.writePacket(newPacket(l.ID, "ACK", ack))
+        }
         return
     }
 }
@@ -131,6 +128,9 @@ func (l *Link) Write(p []byte) (n int, err error) {
         case <-l.ctx.Done():
             return 0, io.ErrClosedPipe
 
+        case <-l.manager.ctx.Done():
+            return 0, io.ErrClosedPipe
+
         default:
             l.manager.writePacket(newPacket(l.ID, "PSH", p))
             return len(p), nil
@@ -139,6 +139,8 @@ func (l *Link) Write(p []byte) (n int, err error) {
 }
 
 func (l *Link) Close() error {
+    l.manager.removeLink(l.ID)
+
     select {
     case <-l.ctx.Done():
         return nil
