@@ -18,10 +18,12 @@ type Manager struct {
     dieLock sync.Mutex
 
     writes chan *Packet
+
+    acceptQueue chan *Link
 }
 
 func NewManager(conn io.ReadWriteCloser) *Manager {
-    return &Manager{
+    manager := &Manager{
         conn: conn,
 
         links: make(map[uuid.UUID]*Link),
@@ -29,7 +31,13 @@ func NewManager(conn io.ReadWriteCloser) *Manager {
         die: make(chan struct{}),
 
         writes: make(chan *Packet, 1000),
+
+        acceptQueue: make(chan *Link, 1000),
     }
+
+    go manager.readLoop()
+    go manager.writeLoop()
+    return manager
 }
 
 func (m *Manager) readPacket() (*Packet, error) {
@@ -58,8 +66,8 @@ func (m *Manager) readPacket() (*Packet, error) {
 }
 
 func (m *Manager) writePacket(p *Packet) error {
-    m.dieLock.Lock()
-    defer m.dieLock.Unlock()
+    /*m.dieLock.Lock()
+    defer m.dieLock.Unlock()*/
 
     select {
     case <-m.die:
@@ -80,7 +88,18 @@ func (m *Manager) readLoop() {
         packet, err := m.readPacket()
         if err != nil {
             log.Println(LowLevelErr)
-            // close all links
+            select {
+            case <-m.die:
+            default:
+                close(m.die)
+                // close all links
+                m.linksLock.Lock()
+                for _, link := range m.links {
+                    link.rst()
+                }
+                return
+            }
+
         }
 
         switch {
@@ -92,6 +111,7 @@ func (m *Manager) readLoop() {
                 link := newLink(packet.ID, m)
                 link.pushBytes(packet.Payload)
                 m.links[packet.ID] = link
+                m.acceptQueue <- link
             }
             m.linksLock.Unlock()
 
@@ -121,6 +141,27 @@ func (m *Manager) readLoop() {
     }
 }
 
+func (m *Manager) writeLoop() {
+    for {
+        select {
+        case <-m.die:
+            return
+
+        case packet := <-m.writes:
+            if _, err := m.conn.Write(packet.Bytes()); err != nil {
+                log.Println(err)
+                select {
+                case <-m.die:
+                    return
+                default:
+                    close(m.die)
+                    return
+                }
+            }
+        }
+    }
+}
+
 func (m *Manager) IsClosed() bool {
     select {
     case <-m.die:
@@ -133,4 +174,30 @@ func (m *Manager) IsClosed() bool {
 
 func (m *Manager) removeLink(id uuid.UUID) {
     delete(m.links, id)
+}
+
+func (m *Manager) NewLink() (*Link, error) {
+    id, _ := uuid.NewV4()
+    link := newLink(id, m)
+
+    select {
+    case <-m.die:
+        return nil, io.ErrClosedPipe
+
+    default:
+        m.linksLock.Lock()
+        m.links[link.ID] = link
+        m.linksLock.Unlock()
+        return link, nil
+    }
+}
+
+func (m *Manager) Accept() (*Link, error) {
+    select {
+    case <-m.die:
+        return nil, io.ErrClosedPipe
+
+    case link := <-m.acceptQueue:
+        return link, nil
+    }
 }

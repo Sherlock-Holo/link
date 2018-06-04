@@ -72,42 +72,58 @@ func (l *Link) NotifyReadEvent() {
 }
 
 func (l *Link) Read(p []byte) (n int, err error) {
+    if len(p) == 0 || p == nil {
+        return 0, nil
+    }
+
     select {
     case <-l.manager.die:
         return 0, LowLevelErr
 
-    case <-l.readClosed:
-        if l.buf.Len() != 0 {
-            n, _ = l.buf.Read(p)
-        }
+    case <-l.die:
+        return 0, RST
+
+    default:
         select {
-        case <-l.writeClosed:
-            return n, CLOSED
-        default:
-            return n, CLOSE_WAIT
-        }
-
-    case <-l.readEvent:
-        l.bufLock.Lock()
-        n, err = l.buf.Read(p)
-        l.bufLock.Unlock()
-
-        if l.buf.Len() != 0 {
+        case <-l.readClosed:
+            /*if l.buf.Len() != 0 {
+                n, _ = l.buf.Read(p)
+            }
             select {
-            case l.readEvent <- struct{}{}:
+            case <-l.writeClosed:
+                return n, io.EOF
             default:
+                return n, io.EOF
+            }*/
+            if l.buf.Len() == 0 {
+                return 0, io.EOF
             }
+
+            n, _ = l.buf.Read(p)
+            return
+
+        case <-l.readEvent:
+            l.bufLock.Lock()
+            n, err = l.buf.Read(p)
+            l.bufLock.Unlock()
+
+            if l.buf.Len() != 0 {
+                select {
+                case l.readEvent <- struct{}{}:
+                default:
+                }
+            }
+
+            go func() {
+                b := make([]byte, 4)
+                binary.BigEndian.PutUint32(b, uint32(n))
+
+                if err := l.manager.writePacket(newPacket(l.ID, "ACK", b)); err != nil {
+                    l.rst()
+                }
+            }()
+            return
         }
-
-        go func() {
-            b := make([]byte, 4)
-            binary.BigEndian.PutUint32(b, uint32(n))
-
-            if err := l.manager.writePacket(newPacket(l.ID, "ACK", b)); err != nil {
-                l.rst()
-            }
-        }()
-        return
     }
 }
 
