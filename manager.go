@@ -6,6 +6,7 @@ import (
     "sync"
     "log"
     "encoding/binary"
+    "fmt"
 )
 
 type Manager struct {
@@ -44,7 +45,7 @@ func (m *Manager) readPacket() (*Packet, error) {
     header := PacketHeader(make([]byte, HeaderLength))
     _, err := io.ReadFull(m.conn, header)
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("readPacket: %s", err)
     }
 
     var payload []byte
@@ -53,13 +54,13 @@ func (m *Manager) readPacket() (*Packet, error) {
         payload = make([]byte, header.PayloadLength())
         _, err = io.ReadFull(m.conn, payload)
         if err != nil {
-            return nil, err
+            return nil, fmt.Errorf("readPacket: %s", err)
         }
     }
 
     packet, err := Decode(append(header, payload...))
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("readPacket: %s", err)
     }
 
     return packet, nil
@@ -87,7 +88,7 @@ func (m *Manager) readLoop() {
 
         packet, err := m.readPacket()
         if err != nil {
-            log.Println(LowLevelErr)
+            log.Println(fmt.Errorf("readLoop: %s", LowLevelErr))
             select {
             case <-m.die:
             default:
@@ -150,7 +151,7 @@ func (m *Manager) writeLoop() {
 
         case packet := <-m.writes:
             if _, err := m.conn.Write(packet.Bytes()); err != nil {
-                log.Println(err)
+                log.Println(fmt.Errorf("writeLoop: %s", err))
                 select {
                 case <-m.die:
                 default:

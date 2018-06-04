@@ -9,6 +9,8 @@ import (
     "golang.org/x/sync/semaphore"
     "io"
     "encoding/binary"
+    "log"
+    "fmt"
 )
 
 const (
@@ -61,10 +63,10 @@ func (l *Link) pushBytes(p []byte) {
     l.buf.Write(p)
     l.bufLock.Unlock()
 
-    l.NotifyReadEvent()
+    l.notifyReadEvent()
 }
 
-func (l *Link) NotifyReadEvent() {
+func (l *Link) notifyReadEvent() {
     select {
     case l.readEvent <- struct{}{}:
     default:
@@ -78,10 +80,10 @@ func (l *Link) Read(p []byte) (n int, err error) {
 
     select {
     case <-l.manager.die:
-        return 0, LowLevelErr
+        return 0, fmt.Errorf("read: %s", LowLevelErr)
 
     case <-l.die:
-        return 0, RST
+        return 0, fmt.Errorf("read: %s", RST)
 
     default:
         select {
@@ -95,12 +97,12 @@ func (l *Link) Read(p []byte) (n int, err error) {
             default:
                 return n, io.EOF
             }*/
-            if l.buf.Len() == 0 {
+            /*if l.buf.Len() == 0 {
                 return 0, io.EOF
-            }
+            }*/
 
-            n, _ = l.buf.Read(p)
-            return
+            n, err = l.buf.Read(p)
+            return n, fmt.Errorf("read: %s", err)
 
         case <-l.readEvent:
             l.bufLock.Lock()
@@ -130,7 +132,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 func (l *Link) Write(p []byte) (n int, err error) {
     select {
     case <-l.manager.die:
-        return 0, LowLevelErr
+        return 0, fmt.Errorf("write: %s", LowLevelErr)
 
     case <-l.writeClosed:
         select {
@@ -148,7 +150,7 @@ func (l *Link) Write(p []byte) (n int, err error) {
             return 0, io.ErrClosedPipe
         default:
             if err := l.manager.writePacket(newPacket(l.ID, "PSH", p)); err != nil {
-                return 0, err
+                return 0, fmt.Errorf("write: %s", err)
             }
 
             return len(p), nil
@@ -165,11 +167,13 @@ func (l *Link) ack(size uint32) {
 }
 
 func (l *Link) rst() {
+    l.dieLock.Lock()
     select {
     case <-l.die:
     default:
         close(l.die)
     }
+    l.dieLock.Unlock()
 
     select {
     case <-l.readClosed:
@@ -193,7 +197,7 @@ func (l *Link) CloseWrite() error {
     select {
     case <-l.die:
         l.manager.removeLink(l.ID)
-        return RST
+        return fmt.Errorf("closeWrite: %s", RST)
     default:
         select {
         case <-l.readClosed:
@@ -207,7 +211,10 @@ func (l *Link) CloseWrite() error {
 
         default:
             close(l.writeClosed)
-            return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
+            if err := l.manager.writePacket(newPacket(l.ID, "FIN", nil)); err != nil {
+                return fmt.Errorf("closeWrite: %s", err)
+            }
+            return nil
         }
     }
 }
@@ -216,7 +223,7 @@ func (l *Link) CloseRead() error {
     select {
     case <-l.die:
         l.manager.removeLink(l.ID)
-        return RST
+        return fmt.Errorf("closeRead: %s", RST)
     default:
         select {
         case <-l.writeClosed:
@@ -232,5 +239,37 @@ func (l *Link) CloseRead() error {
             close(l.readClosed)
             return nil
         }
+    }
+}
+
+func (l *Link) RST() {
+    l.dieLock.Lock()
+    select {
+    case <-l.die:
+        return
+    default:
+        close(l.die)
+    }
+    l.dieLock.Unlock()
+
+    select {
+    case <-l.manager.die:
+    default:
+        if err := l.manager.writePacket(newPacket(l.ID, "RST", nil)); err != nil {
+            log.Println(fmt.Errorf("RST: %s", err))
+            return
+        }
+    }
+
+    select {
+    case <-l.readClosed:
+    default:
+        close(l.readClosed)
+    }
+
+    select {
+    case <-l.writeClosed:
+    default:
+        close(l.writeClosed)
     }
 }
