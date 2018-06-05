@@ -4,10 +4,7 @@ import (
     "bytes"
     "context"
     "sync"
-
-    "golang.org/x/sync/semaphore"
     "io"
-    "encoding/binary"
 )
 
 const (
@@ -17,16 +14,15 @@ const (
 type Link struct {
     ID uint32 // *
 
-    ctx           context.Context    // *
-    ctxCancelFunc context.CancelFunc // *
+    ctx           context.Context    // ctx.Done() can recv means link is closed
+    ctxCancelFunc context.CancelFunc // close the link
+    ctxLock       sync.Mutex         // ensure link close one time
 
     manager *Manager // *
 
     buf       bytes.Buffer // *
     bufLock   sync.Mutex
-    readEvent chan struct{} // size 1
-
-    writeSemaphore *semaphore.Weighted // wind
+    readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call bufNotify
 }
 
 func newLink(id uint32, m *Manager) *Link {
@@ -41,34 +37,52 @@ func newLink(id uint32, m *Manager) *Link {
         manager: m,
 
         readEvent: make(chan struct{}, 1),
-
-        writeSemaphore: semaphore.NewWeighted(maxBufSize),
     }
 }
 
-func (l *Link) pushBytes(p []byte) {
-    l.bufLock.Lock()
-    l.buf.Write(p)
-    l.notifyReadEvent()
-    l.bufLock.Unlock()
-}
-
-func (l *Link) notifyReadEvent() {
+func (l *Link) bufNotify() {
     select {
     case l.readEvent <- struct{}{}:
     default:
     }
 }
 
-func (l *Link) ack(n uint32) {
-    select {
-    case <-l.ctx.Done():
-    default:
-        l.writeSemaphore.Release(int64(n))
-    }
+func (l *Link) pushBytes(p []byte) {
+    l.bufLock.Lock()
+    l.buf.Write(p)
+    l.bufNotify()
+    l.bufLock.Unlock()
 }
 
 func (l *Link) Read(p []byte) (n int, err error) {
+    if len(p) == 0 {
+        select {
+        case <-l.ctx.Done():
+            return 0, io.EOF
+        default:
+            return 0, nil
+        }
+    }
+
+    select {
+    case <-l.ctx.Done():
+        return l.buf.Read(p)
+
+    case <-l.readEvent:
+        l.bufLock.Lock()
+        n, err = l.buf.Read(p)
+        if l.buf.Len() != 0 {
+            l.bufNotify()
+        }
+        l.bufLock.Unlock()
+
+        l.manager.returnToken(n)
+
+        return
+    }
+}
+
+func (l *Link) Write(p []byte) (int, error) {
     if len(p) == 0 {
         select {
         case <-l.ctx.Done():
@@ -80,77 +94,37 @@ func (l *Link) Read(p []byte) (n int, err error) {
 
     select {
     case <-l.ctx.Done():
-        n, err = l.buf.Read(p)
-        return
-
-    case <-l.readEvent:
-        l.bufLock.Lock()
-        n, err = l.buf.Read(p)
-        if l.buf.Len() != 0 {
-            l.notifyReadEvent()
-        }
-        l.bufLock.Unlock()
-
-        select {
-        case <-l.ctx.Done():
-            return n, io.ErrUnexpectedEOF
-        default:
-            ack := make([]byte, 4)
-            binary.BigEndian.PutUint32(ack, uint32(n))
-            l.manager.writePacket(newPacket(l.ID, "ACK", ack))
-        }
-        return
-    }
-}
-
-func (l *Link) Write(p []byte) (n int, err error) {
-    if len(p) == 0 {
-        select {
-        case <-l.ctx.Done():
-            return 0, io.ErrClosedPipe
-        case <-l.manager.ctx.Done():
-            return 0, io.ErrClosedPipe
-        default:
-            return
-        }
-    }
-
-    select {
-    case <-l.ctx.Done():
         return 0, io.ErrClosedPipe
-
-    case <-l.manager.ctx.Done():
-        return 0, io.ErrClosedPipe
-
     default:
-        l.writeSemaphore.Acquire(l.ctx, int64(len(p)))
-        select {
-        case <-l.ctx.Done():
-            return 0, io.ErrClosedPipe
-
-        case <-l.manager.ctx.Done():
-            return 0, io.ErrClosedPipe
-
-        default:
-            l.manager.writePacket(newPacket(l.ID, "PSH", p))
-            return len(p), nil
+        if err := l.manager.writePacket(newPacket(l.ID, "PSH", p)); err != nil {
+            return 0, err
         }
+        return len(p), nil
     }
 }
 
 func (l *Link) Close() error {
-    l.manager.removeLink(l.ID)
+    l.ctxLock.Lock()
+    defer l.ctxLock.Unlock()
+
+    l.manager.returnToken(l.buf.Len())
 
     select {
     case <-l.ctx.Done():
         return nil
     default:
         l.ctxCancelFunc()
-        l.manager.writePacket(newPacket(l.ID, "FIN", nil))
-        return nil
+        l.manager.linksLock.Lock()
+        l.manager.removeLink(l.ID)
+        l.manager.linksLock.Unlock()
+        return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
     }
 }
 
+// when recv FIN, link should be closed and should not send FIN too
 func (l *Link) close() {
+    l.ctxLock.Lock()
     l.ctxCancelFunc()
+    l.ctxLock.Unlock()
+    l.manager.returnToken(l.buf.Len())
 }

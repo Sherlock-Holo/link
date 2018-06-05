@@ -3,11 +3,17 @@ package link
 import (
     "io"
     "sync"
-    "fmt"
     "context"
+    "fmt"
     "log"
-    "encoding/binary"
+    "sync/atomic"
+    "errors"
 )
+
+type writeRequest struct {
+    packet  *Packet
+    written chan struct{} // if written, close this chan
+}
 
 type Manager struct {
     conn io.ReadWriteCloser
@@ -15,12 +21,16 @@ type Manager struct {
     links     map[uint32]*Link
     linksLock sync.Mutex
 
-    maxID uint32
+    maxID int32
 
-    ctx           context.Context
-    ctxCancelFunc context.CancelFunc
+    bucket      int32         // read bucket, only manager readLoop and link.Read will modify it.
+    bucketEvent chan struct{} // every time recv PSH and bucket is bigger than 0, will notify, link.Read will modify.
 
-    writes chan *Packet
+    ctx           context.Context    // ctx.Done() can recv means manager is closed
+    ctxCancelFunc context.CancelFunc // close the manager
+    ctxLock       sync.Mutex         // ensure manager close one time
+
+    writes chan writeRequest
 
     acceptQueue chan *Link
 }
@@ -33,16 +43,31 @@ func NewManager(conn io.ReadWriteCloser) *Manager {
 
         links: make(map[uint32]*Link),
 
+        maxID: -1,
+
+        bucket:      maxBufSize,
+        bucketEvent: make(chan struct{}, 1),
+
         ctx:           ctx,
         ctxCancelFunc: cancelFunc,
 
-        writes: make(chan *Packet, 1000),
+        writes: make(chan writeRequest, 1000),
 
         acceptQueue: make(chan *Link, 1000),
     }
+
+    manager.bucketNotify()
+
     go manager.readLoop()
     go manager.writeLoop()
     return manager
+}
+
+func (m *Manager) bucketNotify() {
+    select {
+    case m.bucketEvent <- struct{}{}:
+    default:
+    }
 }
 
 func (m *Manager) readPacket() (*Packet, error) {
@@ -53,8 +78,8 @@ func (m *Manager) readPacket() (*Packet, error) {
 
     var payload []byte
 
-    if header.PayloadLength() != 0 {
-        payload = make([]byte, header.PayloadLength())
+    if length := header.PayloadLength(); length != 0 {
+        payload = make([]byte, length)
         if _, err := io.ReadFull(m.conn, payload); err != nil {
             return nil, fmt.Errorf("manager read packet payload: %s", err)
         }
@@ -62,22 +87,57 @@ func (m *Manager) readPacket() (*Packet, error) {
 
     packet, err := Decode(append(header, payload...))
     if err != nil {
-        return nil, fmt.Errorf("manager decode packet failed: %s", err)
+        return nil, fmt.Errorf("manager read packet decode: %s", err)
     }
 
     return packet, nil
 }
 
-func (m *Manager) writePacket(p *Packet) {
+func (m *Manager) writePacket(p *Packet) error {
+    req := writeRequest{
+        packet:  p,
+        written: make(chan struct{}),
+    }
+
     select {
     case <-m.ctx.Done():
-    default:
-        m.writes <- p
+        return io.ErrClosedPipe
+    case m.writes <- req:
+    }
+
+    select {
+    case <-m.ctx.Done():
+        return io.ErrClosedPipe
+    case <-req.written:
+        return nil
     }
 }
 
+func (m *Manager) Close() error {
+    m.ctxLock.Lock()
+
+    select {
+    case <-m.ctx.Done():
+        m.ctxLock.Unlock()
+        return nil
+    default:
+        m.ctxCancelFunc()
+        m.ctxLock.Unlock()
+        return m.conn.Close()
+    }
+}
+
+func (m *Manager) returnToken(n int) {
+    if atomic.AddInt32(&m.bucket, int32(n)) > 0 {
+        m.bucketNotify()
+    }
+}
+
+// recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
+    // m.linksLock.Lock()
     delete(m.links, id)
+    // m.linksLock.Unlock()
 }
 
 func (m *Manager) readLoop() {
@@ -85,41 +145,31 @@ func (m *Manager) readLoop() {
         select {
         case <-m.ctx.Done():
             return
-        default:
+        case <-m.bucketEvent:
         }
 
         packet, err := m.readPacket()
         if err != nil {
             log.Println(err)
-            m.close()
-
-            for _, link := range m.links {
-                link.close()
-            }
+            m.Close()
             return
         }
 
         switch {
         case packet.PSH:
-            log.Println("PSH", packet.Length)
             m.linksLock.Lock()
             if link, ok := m.links[packet.ID]; ok {
                 link.pushBytes(packet.Payload)
             } else {
-                if packet.ID > m.maxID {
-                    m.maxID = packet.ID
-
-                    link := newLink(packet.ID, m)
-                    link.pushBytes(packet.Payload)
-                    m.acceptQueue <- link
-                }
+                // log.Println("new link:", packet.ID)
+                link := newLink(packet.ID, m)
+                m.links[link.ID] = link
+                link.pushBytes(packet.Payload)
+                m.acceptQueue <- link
             }
             m.linksLock.Unlock()
-
-        case packet.ACK:
-            log.Println("ACK", binary.BigEndian.Uint32(packet.Payload))
-            if link, ok := m.links[packet.ID]; ok {
-                link.ack(binary.BigEndian.Uint32(packet.Payload))
+            if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
+                m.bucketNotify()
             }
 
         case packet.FIN:
@@ -138,43 +188,37 @@ func (m *Manager) writeLoop() {
         select {
         case <-m.ctx.Done():
             return
-
-        case packet := <-m.writes:
-            _, err := m.conn.Write(packet.Bytes())
+        case req := <-m.writes:
+            _, err := m.conn.Write(req.packet.Bytes())
             if err != nil {
-                log.Printf("manager writeLoop: %s", err)
-                m.close()
-                for _, link := range m.links {
-                    link.close()
-                }
+                m.Close()
                 return
             }
+            close(req.written)
         }
-    }
-}
-
-func (m *Manager) close() error {
-    m.ctxCancelFunc()
-    return nil
-}
-
-func (m *Manager) Accept() (*Link, error) {
-    select {
-    case <-m.ctx.Done():
-        return nil, io.ErrClosedPipe
-    case link := <-m.acceptQueue:
-        return link, nil
     }
 }
 
 func (m *Manager) NewLink() (*Link, error) {
     m.maxID++
-    link := newLink(m.maxID, m)
+    link := newLink(uint32(m.maxID), m)
 
     select {
     case <-m.ctx.Done():
-        return nil, io.ErrClosedPipe
+        return nil, errors.New("broken manager")
     default:
+        m.linksLock.Lock()
+        m.links[link.ID] = link
+        m.linksLock.Unlock()
+        return link, nil
+    }
+}
+
+func (m *Manager) Accept() (*Link, error) {
+    select {
+    case <-m.ctx.Done():
+        return nil, errors.New("broken manager")
+    case link := <-m.acceptQueue:
         return link, nil
     }
 }
