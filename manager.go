@@ -26,7 +26,7 @@ type Manager struct {
     bucket      int32         // read bucket, only manager readLoop and link.Read will modify it.
     bucketEvent chan struct{} // every time recv PSH and bucket is bigger than 0, will notify, link.Read will modify.
 
-    ctx           context.Context    // ctx.Done() can recv means manager is closed
+    ctx           context.Context    // readCtx.Done() can recv means manager is closed
     ctxCancelFunc context.CancelFunc // close the manager
     ctxLock       sync.Mutex         // ensure manager close one time
 
@@ -176,7 +176,7 @@ func (m *Manager) readLoop() {
             m.linksLock.Lock()
             if link, ok := m.links[packet.ID]; ok {
                 link.close()
-                m.removeLink(link.ID)
+                // m.removeLink(link.ID)
             }
             m.linksLock.Unlock()
         }
