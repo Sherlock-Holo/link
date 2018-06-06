@@ -30,7 +30,7 @@ type Manager struct {
     bucket      int32         // read bucket, only manager readLoop and link.Read will modify it.
     bucketEvent chan struct{} // every time recv PSH and bucket is bigger than 0, will notify, link.Read will modify.
 
-    ctx           context.Context    // readCtx.Done() can recv means manager is closed
+    ctx           context.Context    // ctx.Done() can recv means manager is closed
     ctxCancelFunc context.CancelFunc // close the manager
     ctxLock       sync.Mutex         // ensure manager close one time
 
@@ -170,10 +170,12 @@ func (m *Manager) readLoop() {
             if link, ok := m.links[packet.ID]; ok {
                 link.pushBytes(packet.Payload)
             } else {
-                link := newLink(packet.ID, m)
-                m.links[link.ID] = link
-                link.pushBytes(packet.Payload)
-                m.acceptQueue <- link
+                if int32(packet.ID) > atomic.LoadInt32(&m.maxID) {
+                    link := newLink(packet.ID, m)
+                    m.links[link.ID] = link
+                    link.pushBytes(packet.Payload)
+                    m.acceptQueue <- link
+                }
             }
             m.linksLock.Unlock()
             if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
@@ -208,8 +210,10 @@ func (m *Manager) writeLoop() {
 }
 
 func (m *Manager) NewLink() (*Link, error) {
-    m.maxID++
-    link := newLink(uint32(m.maxID), m)
+    // go race detector say it will happen data race
+    /*m.maxID++
+    link := newLink(uint32(m.maxID), m)*/
+    link := newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
 
     select {
     case <-m.ctx.Done():

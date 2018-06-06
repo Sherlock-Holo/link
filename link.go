@@ -9,7 +9,7 @@ import (
 )
 
 type Link struct {
-    ID uint32 // *
+    ID uint32
 
     readCtx           context.Context    // readCtx.Done() can recv means link read is closed
     readCtxCancelFunc context.CancelFunc // close the link read
@@ -19,9 +19,9 @@ type Link struct {
     writeCtxCancelFunc context.CancelFunc // close the link write
     writeCtxLock       sync.Mutex         // ensure link write close one time
 
-    manager *Manager // *
+    manager *Manager
 
-    buf       bytes.Buffer // *
+    buf       bytes.Buffer
     bufLock   sync.Mutex
     readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call bufNotify
 
@@ -189,14 +189,15 @@ func (l *Link) Close() error {
 
 // when recv FIN, link should be closed and should not send FIN too
 func (l *Link) close() {
+    l.bufLock.Lock()
     l.manager.returnToken(l.buf.Len())
+    l.bufLock.Unlock()
 
     l.readCtxLock.Lock()
     defer l.readCtxLock.Unlock()
 
     select {
     case <-l.readCtx.Done():
-
         l.manager.removeLink(l.ID)
     default:
         l.readCtxCancelFunc()
