@@ -8,10 +8,6 @@ import (
     "errors"
 )
 
-const (
-    maxBufSize = 1 << 18
-)
-
 type Link struct {
     ID uint32 // *
 
@@ -75,21 +71,36 @@ func (l *Link) Read(p []byte) (n int, err error) {
         }
     }
 
-    select {
-    case <-l.readCtx.Done():
-        return l.buf.Read(p)
-
-    case <-l.readEvent:
+    /*READ:
         l.bufLock.Lock()
         n, err = l.buf.Read(p)
-        if l.buf.Len() != 0 {
-            l.bufNotify()
-        }
         l.bufLock.Unlock()
 
-        l.manager.returnToken(n)
+        if n > 0 {
+            return
+        }
 
-        return
+        select {
+        case <-l.readCtx.Done():
+            return 0, io.EOF
+        case <-l.readEvent:
+            goto READ
+        }*/
+
+    for {
+        l.bufLock.Lock()
+        n, err = l.buf.Read(p)
+        l.bufLock.Unlock()
+
+        if n > 0 {
+            return
+        }
+
+        select {
+        case <-l.readCtx.Done():
+            return 0, io.EOF
+        case <-l.readEvent:
+        }
     }
 }
 
@@ -140,6 +151,12 @@ func (l *Link) Close() error {
         }
     default:
         l.readCtxCancelFunc()
+
+        select {
+        case <-l.readEvent: // clear the readEvent
+        default:
+        }
+
         select {
         case <-l.writeCtx.Done():
             return nil
@@ -154,9 +171,7 @@ func (l *Link) Close() error {
 func (l *Link) close() {
     l.manager.returnToken(l.buf.Len())
 
-    // l.writeCtxLock.Lock()
     l.readCtxLock.Lock()
-    // defer l.writeCtxLock.Unlock()
     defer l.readCtxLock.Unlock()
 
     select {
@@ -166,6 +181,12 @@ func (l *Link) close() {
         // l.manager.linksLock.Unlock()
     default:
         l.readCtxCancelFunc()
+
+        select {
+        case <-l.readEvent: // clear the readEvent
+        default:
+        }
+
         select {
         case <-l.writeCtx.Done():
             // l.manager.linksLock.Lock()

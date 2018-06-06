@@ -10,6 +10,10 @@ import (
     "errors"
 )
 
+const (
+    maxBucketSize = 1 << 18
+)
+
 type writeRequest struct {
     packet  *Packet
     written chan struct{} // if written, close this chan
@@ -45,7 +49,7 @@ func NewManager(conn io.ReadWriteCloser) *Manager {
 
         maxID: -1,
 
-        bucket:      maxBufSize,
+        bucket:      maxBucketSize,
         bucketEvent: make(chan struct{}, 1),
 
         ctx:           ctx,
@@ -191,6 +195,7 @@ func (m *Manager) writeLoop() {
         case req := <-m.writes:
             _, err := m.conn.Write(req.packet.Bytes())
             if err != nil {
+                log.Println("manager writeLoop:", err)
                 m.Close()
                 return
             }
