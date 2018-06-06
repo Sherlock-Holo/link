@@ -3,7 +3,6 @@ package link
 import (
     "encoding/binary"
     "fmt"
-
     "strings"
 )
 
@@ -69,10 +68,22 @@ func newPacket(id uint32, status string, payload []byte) *Packet {
     return &packet
 }
 
-func (p *Packet) Bytes() []byte {
-    /*b := make([]byte, 0, HeaderLength)
+func split(id uint32, p []byte) []*Packet {
+    if len(p) <= 65536 {
+        return []*Packet{newPacket(id, "PSH", p)}
+    }
 
-    b = append(b, p.ID.Bytes()...)*/
+    var ps []*Packet
+
+    for len(p) > 65535 {
+        ps = append(ps, newPacket(id, "PSH", p))
+        p = p[65535:]
+    }
+    ps = append(ps, newPacket(id, "PSH", p)) // append last data which size <= 65535
+    return ps
+}
+
+func (p *Packet) Bytes() []byte {
     b := make([]byte, 4)
     binary.BigEndian.PutUint32(b, p.ID)
 

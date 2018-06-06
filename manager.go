@@ -1,13 +1,13 @@
 package link
 
 import (
-    "io"
-    "sync"
     "context"
-    "fmt"
-    "log"
-    "sync/atomic"
     "errors"
+    "fmt"
+    "io"
+    "log"
+    "sync"
+    "sync/atomic"
 )
 
 const (
@@ -146,9 +146,7 @@ func (m *Manager) returnToken(n int) {
 
 // recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
-    // m.linksLock.Lock()
     delete(m.links, id)
-    // m.linksLock.Unlock()
 }
 
 func (m *Manager) readLoop() {
@@ -172,7 +170,6 @@ func (m *Manager) readLoop() {
             if link, ok := m.links[packet.ID]; ok {
                 link.pushBytes(packet.Payload)
             } else {
-                // log.Println("new link:", packet.ID)
                 link := newLink(packet.ID, m)
                 m.links[link.ID] = link
                 link.pushBytes(packet.Payload)
@@ -187,7 +184,6 @@ func (m *Manager) readLoop() {
             m.linksLock.Lock()
             if link, ok := m.links[packet.ID]; ok {
                 link.close()
-                // m.removeLink(link.ID)
             }
             m.linksLock.Unlock()
         }

@@ -3,9 +3,9 @@ package link
 import (
     "bytes"
     "context"
-    "sync"
-    "io"
     "errors"
+    "io"
+    "sync"
 )
 
 type Link struct {
@@ -71,6 +71,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
         }
     }
 
+    // learn from smux, thanks smux!!!
     /*READ:
         l.bufLock.Lock()
         n, err = l.buf.Read(p)
@@ -118,12 +119,27 @@ func (l *Link) Write(p []byte) (int, error) {
         }
     }
 
-    select {
-    case <-l.writeCtx.Done():
-        return 0, io.ErrClosedPipe
-    default:
-        if err := l.manager.writePacket(newPacket(l.ID, "PSH", p)); err != nil {
-            return 0, err
+    if len(p) <= 65535 {
+        select {
+        case <-l.writeCtx.Done():
+            return 0, io.ErrClosedPipe
+        default:
+            if err := l.manager.writePacket(newPacket(l.ID, "PSH", p)); err != nil {
+                return 0, err
+            }
+            return len(p), nil
+        }
+    } else {
+        packets := split(l.ID, p)
+        for _, packet := range packets {
+            select {
+            case <-l.writeCtx.Done():
+                return 0, io.ErrClosedPipe
+            default:
+                if err := l.manager.writePacket(packet); err != nil {
+                    return 0, err
+                }
+            }
         }
         return len(p), nil
     }
@@ -180,9 +196,8 @@ func (l *Link) close() {
 
     select {
     case <-l.readCtx.Done():
-        // l.manager.linksLock.Lock()
+
         l.manager.removeLink(l.ID)
-        // l.manager.linksLock.Unlock()
     default:
         l.readCtxCancelFunc()
 
@@ -193,9 +208,7 @@ func (l *Link) close() {
 
         select {
         case <-l.writeCtx.Done():
-            // l.manager.linksLock.Lock()
             l.manager.removeLink(l.ID)
-            // l.manager.linksLock.Unlock()
         default:
         }
     }
