@@ -223,3 +223,22 @@ func (l *Link) CloseWrite() error {
         }
     }
 }
+
+func (l *Link) managerClosed() {
+    l.readCtxLock.Lock()
+    l.writeCtxLock.Lock()
+    defer l.readCtxLock.Unlock()
+    defer l.writeCtxLock.Unlock()
+
+    select {
+    case <-l.readCtx.Done():
+    default:
+        l.readCtxCancelFunc()
+    }
+
+    select {
+    case <-l.writeCtx.Done():
+    default:
+        l.writeCtxCancelFunc()
+    }
+}

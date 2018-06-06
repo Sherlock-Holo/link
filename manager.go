@@ -127,6 +127,13 @@ func (m *Manager) Close() error {
     default:
         m.ctxCancelFunc()
         m.ctxLock.Unlock()
+
+        m.linksLock.Lock()
+        for _, link := range m.links {
+            link.managerClosed()
+        }
+        m.linksLock.Unlock()
+
         return m.conn.Close()
     }
 }
