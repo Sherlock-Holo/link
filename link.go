@@ -90,9 +90,13 @@ func (l *Link) Read(p []byte) (n int, err error) {
     for {
         l.bufLock.Lock()
         n, err = l.buf.Read(p)
+        if l.buf.Len() > 0 {
+            l.bufNotify()
+        }
         l.bufLock.Unlock()
 
         if n > 0 {
+            l.manager.returnToken(n)
             return
         }
 
