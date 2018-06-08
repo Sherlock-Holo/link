@@ -1,6 +1,6 @@
 # link
 
-## mux can be based on TCP, Websocket, something stream
+## mux can be based on TCP, Websocket(should implement `io.ReadWriteCloser`), something stream
 link low level should implement `io.ReadWriteCloser`
 
 ### link implement:
