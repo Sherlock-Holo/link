@@ -217,7 +217,7 @@ func (m *Manager) NewLink() (*Link, error) {
 
     select {
     case <-m.ctx.Done():
-        return nil, errors.New("broken manager")
+        return nil, errors.New("manager closed")
     default:
         m.linksLock.Lock()
         m.links[link.ID] = link
