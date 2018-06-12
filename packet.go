@@ -8,17 +8,21 @@ import (
 
 const (
 	Version      = 0
-	HeaderLength = Version + 4 + 2 + 2
+	HeaderLength = 1 + 4 + 2 + 2
 )
 
 type PacketHeader []byte
 
+func (h PacketHeader) Version() uint8 {
+	return h[0]
+}
+
 func (h PacketHeader) ID() uint32 {
-	return binary.BigEndian.Uint32(h[:4])
+	return binary.BigEndian.Uint32(h[1:5])
 }
 
 func (h PacketHeader) PayloadLength() int {
-	return int(binary.BigEndian.Uint16(h[6:]))
+	return int(binary.BigEndian.Uint16(h[7:]))
 }
 
 // [header 20 bytes] [payload <=65535 bytes]
