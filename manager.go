@@ -206,6 +206,9 @@ func (m *Manager) readLoop() {
 				// m.usedIDsLock.Unlock()
 			}
 			m.linksLock.Unlock()
+			if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
+				m.bucketNotify()
+			}
 
 		case packet.FIN:
 			m.linksLock.Lock()
