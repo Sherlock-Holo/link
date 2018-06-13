@@ -205,6 +205,7 @@ func (m *Manager) readLoop() {
 				}
 				// m.usedIDsLock.Unlock()
 			}
+			m.linksLock.Unlock()
 
 		case packet.FIN:
 			m.linksLock.Lock()
