@@ -49,7 +49,8 @@ func NewManager(conn io.ReadWriteCloser) *Manager {
 
 		links: make(map[uint32]*Link),
 
-		maxID: -1,
+		maxID:   -1,
+		usedIDs: make(map[uint32]bool),
 
 		bucket:      maxBucketSize,
 		bucketEvent: make(chan struct{}, 1),
