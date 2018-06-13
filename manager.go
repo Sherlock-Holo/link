@@ -25,7 +25,9 @@ type Manager struct {
 	links     map[uint32]*Link
 	linksLock sync.Mutex
 
-	maxID int32
+	maxID   int32
+	usedIDs map[uint32]bool
+	// usedIDsLock sync.Mutex
 
 	bucket      int32         // read bucket, only manager readLoop and link.Read will modify it.
 	bucketEvent chan struct{} // every time recv PSH and bucket is bigger than 0, will notify, link.Read will modify.
@@ -167,11 +169,16 @@ func (m *Manager) readLoop() {
 		switch {
 		case packet.PSH:
 			m.linksLock.Lock()
-			if link, ok := m.links[packet.ID]; ok {
+			/*if link, ok := m.links[packet.ID]; ok {
 				link.pushBytes(packet.Payload)
 			} else {
-				if int32(packet.ID) > atomic.LoadInt32(&m.maxID) {
+				// when manager run on server mode, there are not
+				// concurrent read/write m.maxID
+
+				// if int32(packet.ID) > atomic.LoadInt32(&m.maxID) {
+				if int32(packet.ID) > m.maxID {
 					link := newLink(packet.ID, m)
+					m.maxID = int32(packet.ID)
 					m.links[link.ID] = link
 					link.pushBytes(packet.Payload)
 					m.acceptQueue <- link
@@ -180,6 +187,22 @@ func (m *Manager) readLoop() {
 			m.linksLock.Unlock()
 			if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
 				m.bucketNotify()
+			}*/
+
+			if link, ok := m.links[packet.ID]; ok {
+				link.pushBytes(packet.Payload)
+			} else {
+				// check id is used or not,
+				// make sure don't miss id and don't reopen a closed link.
+				// m.usedIDsLock.Lock()
+				if !(m.usedIDs[uint32(packet.ID)]) {
+					link := newLink(packet.ID, m)
+					m.usedIDs[uint32(packet.ID)] = true
+					m.links[link.ID] = link
+					link.pushBytes(packet.Payload)
+					m.acceptQueue <- link
+				}
+				// m.usedIDsLock.Unlock()
 			}
 
 		case packet.FIN:
