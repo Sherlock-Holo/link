@@ -82,6 +82,10 @@ func (m *Manager) readPacket() (*Packet, error) {
 		return nil, fmt.Errorf("manager read packet header: %s", err)
 	}
 
+	if header.Version() != Version {
+		return nil, VersionErr{header.Version()}
+	}
+
 	var payload []byte
 
 	if length := header.PayloadLength(); length != 0 {

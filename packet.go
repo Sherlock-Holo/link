@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+type VersionErr struct {
+	Version uint8
+}
+
+func (e VersionErr) Error() string {
+	return fmt.Sprintf("packet version %d, expect %d", e.Version, Version)
+}
+
 const (
 	Version      = 1
 	HeaderLength = 1 + 4 + 1 + 2
