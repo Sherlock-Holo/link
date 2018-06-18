@@ -73,6 +73,7 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	manager.timeout = config.Timeout
 
 	manager.timeoutTimer = time.AfterFunc(config.Timeout, func() {
+		log.Println("recv ping timeout")
 		manager.Close()
 	})
 
