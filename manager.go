@@ -70,20 +70,23 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	manager.writes = make(chan writeRequest, config.WriteRequests)
 	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
 
-	manager.timeout = config.Timeout
+	if config.Timeout != 0 {
+		manager.timeout = config.Timeout
 
-	manager.timeoutTimer = time.AfterFunc(config.Timeout, func() {
-		log.Println("recv ping timeout")
-		manager.Close()
-	})
+		manager.timeoutTimer = time.AfterFunc(config.Timeout, func() {
+			log.Println("recv ping timeout")
+			manager.Close()
+		})
 
-	manager.keepAliveTicker = time.NewTicker(config.Timeout / 2)
+		manager.keepAliveTicker = time.NewTicker(config.Timeout / 2)
+
+		go manager.keepAlive()
+	}
 
 	manager.bucketNotify()
 
 	go manager.readLoop()
 	go manager.writeLoop()
-	go manager.keepAlive()
 	return manager
 }
 
