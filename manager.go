@@ -203,8 +203,10 @@ func (m *Manager) readLoop() {
 			return
 		}
 
-		m.timeoutTimer.Stop()
-		m.timeoutTimer.Reset(m.timeout)
+		if m.timeoutTimer != nil {
+			m.timeoutTimer.Stop()
+			m.timeoutTimer.Reset(m.timeout)
+		}
 
 		switch packet.CMD {
 		case PSH:
