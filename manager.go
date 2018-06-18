@@ -199,6 +199,7 @@ func (m *Manager) readLoop() {
 			return
 		}
 
+		m.timeoutTimer.Stop()
 		m.timeoutTimer.Reset(m.timeout)
 
 		switch packet.CMD {
