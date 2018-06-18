@@ -17,6 +17,10 @@ func (e VersionErr) Error() string {
 const (
 	Version      = 1
 	HeaderLength = 1 + 4 + 1 + 2
+
+	PSH  = 128
+	FIN  = 64
+	PING = 32
 )
 
 type PacketHeader []byte
@@ -45,6 +49,8 @@ type Packet struct {
 	PING bool // 0b0010,0000
 	// RSV       0b0000,0000
 
+	CMD uint8
+
 	Length  uint16
 	Payload []byte
 }
@@ -58,12 +64,15 @@ func newPacket(id uint32, status string, payload []byte) *Packet {
 	switch strings.ToUpper(status) {
 	case "PSH":
 		packet.PSH = true
+		packet.CMD = PSH
 
 	case "FIN":
 		packet.FIN = true
+		packet.CMD = FIN
 
 	case "PING":
 		packet.PING = true
+		packet.CMD = PING
 
 	default:
 		panic("not allow status " + status)
@@ -137,14 +146,17 @@ func Decode(b []byte) (*Packet, error) {
 
 	if status&(1<<7) != 0 {
 		p.PSH = true
+		p.CMD = PSH
 	}
 
 	if status&(1<<6) != 0 {
 		p.FIN = true
+		p.CMD = FIN
 	}
 
 	if status&(1<<5) != 0 {
 		p.PING = true
+		p.CMD = PING
 	}
 
 	p.Length = binary.BigEndian.Uint16(b[6:8])

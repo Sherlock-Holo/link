@@ -8,6 +8,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -38,9 +39,13 @@ type Manager struct {
 	writes chan writeRequest
 
 	acceptQueue chan *Link
+
+	timeout         time.Duration
+	timeoutTimer    *time.Timer
+	keepAliveTicker *time.Ticker
 }
 
-func NewManager(conn io.ReadWriteCloser) *Manager {
+func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
 	manager := &Manager{
@@ -56,17 +61,41 @@ func NewManager(conn io.ReadWriteCloser) *Manager {
 
 		ctx:           ctx,
 		ctxCancelFunc: cancelFunc,
-
-		writes: make(chan writeRequest, 1000),
-
-		acceptQueue: make(chan *Link, 1000),
 	}
+
+	if config == nil {
+		config = DefaultConfig
+	}
+
+	manager.writes = make(chan writeRequest, config.WriteRequests)
+	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
+
+	manager.timeout = config.Timeout
+
+	manager.timeoutTimer = time.AfterFunc(config.Timeout, func() {
+		manager.Close()
+	})
+
+	manager.keepAliveTicker = time.NewTicker(config.Timeout / 2)
 
 	manager.bucketNotify()
 
 	go manager.readLoop()
 	go manager.writeLoop()
+	go manager.keepAlive()
 	return manager
+}
+
+func (m *Manager) keepAlive() {
+	defer m.keepAliveTicker.Stop()
+
+	for range m.keepAliveTicker.C {
+		ping := newPacket(127, "PING", nil)
+		if err := m.writePacket(ping); err != nil {
+			log.Println("send ping failed")
+			return
+		}
+	}
 }
 
 func (m *Manager) bucketNotify() {
@@ -170,8 +199,10 @@ func (m *Manager) readLoop() {
 			return
 		}
 
-		switch {
-		case packet.PSH:
+		m.timeoutTimer.Reset(m.timeout)
+
+		switch packet.CMD {
+		case PSH:
 			m.linksLock.Lock()
 			if link, ok := m.links[packet.ID]; ok {
 				link.pushBytes(packet.Payload)
@@ -191,12 +222,14 @@ func (m *Manager) readLoop() {
 				m.bucketNotify()
 			}
 
-		case packet.FIN:
+		case FIN:
 			m.linksLock.Lock()
 			if link, ok := m.links[packet.ID]; ok {
 				link.close()
 			}
 			m.linksLock.Unlock()
+
+		case PING:
 		}
 	}
 }
