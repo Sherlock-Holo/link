@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxBucketSize = 1 << 18
+	maxBucketSize = 1 << 23
 )
 
 type writeRequest struct {
@@ -189,13 +189,11 @@ func (m *Manager) removeLink(id uint32) {
 
 func (m *Manager) readLoop() {
 	for {
-		log.Println("start select")
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.bucketEvent:
 		}
-		log.Println("selected")
 
 		packet, err := m.readPacket()
 		if err != nil {
@@ -203,8 +201,6 @@ func (m *Manager) readLoop() {
 			m.Close()
 			return
 		}
-
-		log.Println("packet has been read, type:", packet.CMD)
 
 		if m.timeoutTimer != nil {
 			m.timeoutTimer.Stop()
