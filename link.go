@@ -21,9 +21,10 @@ type Link struct {
 
 	manager *Manager
 
-	buf       bytes.Buffer
-	bufLock   sync.Mutex
-	readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call bufNotify
+	buf              bytes.Buffer
+	bufLock          sync.Mutex
+	readEvent        chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call bufNotify
+	returnBucketOnce sync.Once
 
 	closed bool
 }
@@ -65,6 +66,9 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		select {
 		case <-l.readCtx.Done():
+			if l.buf.Len() > 0 {
+				return 0, nil
+			}
 			return 0, io.EOF
 		default:
 			return 0, nil
@@ -155,10 +159,11 @@ func (l *Link) Close() error {
 	default:
 		l.readCtxCancelFunc()
 
-		/*select {
-		case <-l.readEvent: // clear the readEvent
-		default:
-		}*/
+		l.returnBucketOnce.Do(func() {
+			l.bufLock.Lock()
+			l.manager.returnToken(l.buf.Len())
+			l.bufLock.Unlock()
+		})
 
 		select {
 		case <-l.writeCtx.Done():
@@ -172,9 +177,11 @@ func (l *Link) Close() error {
 
 // when recv FIN, link should be closed
 func (l *Link) close() {
-	l.bufLock.Lock()
-	l.manager.returnToken(l.buf.Len())
-	l.bufLock.Unlock()
+	l.returnBucketOnce.Do(func() {
+		l.bufLock.Lock()
+		l.manager.returnToken(l.buf.Len())
+		l.bufLock.Unlock()
+	})
 
 	l.readCtxLock.Lock()
 	defer l.readCtxLock.Unlock()
@@ -184,11 +191,6 @@ func (l *Link) close() {
 		l.manager.removeLink(l.ID)
 	default:
 		l.readCtxCancelFunc()
-
-		/*select {
-		case <-l.readEvent: // clear the readEvent
-		default:
-		}*/
 
 		select {
 		case <-l.writeCtx.Done():

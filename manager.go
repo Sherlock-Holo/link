@@ -74,7 +74,7 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	manager.writes = make(chan writeRequest, config.WriteRequests)
 	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
 
-	if config.KeepaliveInterval != 0 {
+	if config.KeepaliveInterval > 0 {
 		manager.interval = config.KeepaliveInterval
 
 		manager.keepaliveTicker = time.NewTicker(config.KeepaliveInterval)
@@ -189,11 +189,13 @@ func (m *Manager) removeLink(id uint32) {
 
 func (m *Manager) readLoop() {
 	for {
+		log.Println("start select")
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.bucketEvent:
 		}
+		log.Println("selected")
 
 		packet, err := m.readPacket()
 		if err != nil {
@@ -201,6 +203,8 @@ func (m *Manager) readLoop() {
 			m.Close()
 			return
 		}
+
+		log.Println("packet has been read, type:", packet.CMD)
 
 		if m.timeoutTimer != nil {
 			m.timeoutTimer.Stop()
@@ -212,6 +216,13 @@ func (m *Manager) readLoop() {
 			m.linksLock.Lock()
 			if link, ok := m.links[packet.ID]; ok {
 				link.pushBytes(packet.Payload)
+
+				m.linksLock.Unlock()
+
+				if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
+					m.bucketNotify()
+				}
+
 			} else {
 				// check id is used or not,
 				// make sure don't miss id and don't reopen a closed link.
@@ -221,9 +232,16 @@ func (m *Manager) readLoop() {
 					m.links[link.ID] = link
 					link.pushBytes(packet.Payload)
 					m.acceptQueue <- link
+
+					m.linksLock.Unlock()
+
+					if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
+						m.bucketNotify()
+					}
+				} else {
+					m.bucketNotify()
 				}
 			}
-			m.linksLock.Unlock()
 
 		case FIN:
 			m.linksLock.Lock()
@@ -231,6 +249,8 @@ func (m *Manager) readLoop() {
 				link.close()
 			}
 			m.linksLock.Unlock()
+
+			m.bucketNotify()
 
 		case PING:
 			timeout := 3 * time.Duration(packet.Payload[0]) * time.Second
@@ -247,9 +267,7 @@ func (m *Manager) readLoop() {
 
 			m.timeoutTimer.Stop()
 			m.timeoutTimer.Reset(timeout)
-		}
 
-		if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
 			m.bucketNotify()
 		}
 	}
@@ -279,9 +297,9 @@ func (m *Manager) NewLink() (*Link, error) {
 	case <-m.ctx.Done():
 		return nil, errors.New("manager closed")
 	default:
-		// m.linksLock.Lock()
+		m.linksLock.Lock()
 		m.links[link.ID] = link
-		// m.linksLock.Unlock()
+		m.linksLock.Unlock()
 		return link, nil
 	}
 }
