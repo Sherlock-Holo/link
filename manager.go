@@ -40,9 +40,13 @@ type Manager struct {
 
 	acceptQueue chan *Link
 
-	timeout         time.Duration
-	timeoutTimer    *time.Timer
-	keepAliveTicker *time.Ticker
+	interval time.Duration // keepalive interval
+
+	timeoutTimer *time.Timer
+	timeout      time.Duration
+	initTimer    sync.Once
+
+	keepaliveTicker *time.Ticker
 }
 
 func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
@@ -70,15 +74,10 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	manager.writes = make(chan writeRequest, config.WriteRequests)
 	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
 
-	if config.Timeout != 0 {
-		manager.timeout = config.Timeout
+	if config.KeepaliveInterval != 0 {
+		manager.interval = config.KeepaliveInterval
 
-		manager.timeoutTimer = time.AfterFunc(config.Timeout, func() {
-			log.Println("recv ping timeout")
-			manager.Close()
-		})
-
-		manager.keepAliveTicker = time.NewTicker(config.Timeout / 2)
+		manager.keepaliveTicker = time.NewTicker(config.KeepaliveInterval)
 
 		go manager.keepAlive()
 	}
@@ -91,10 +90,10 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 }
 
 func (m *Manager) keepAlive() {
-	defer m.keepAliveTicker.Stop()
+	defer m.keepaliveTicker.Stop()
 
-	for range m.keepAliveTicker.C {
-		ping := newPacket(127, "PING", nil)
+	for range m.keepaliveTicker.C {
+		ping := newPacket(127, "PING", []byte{byte(m.interval.Seconds())})
 		if err := m.writePacket(ping); err != nil {
 			log.Println("send ping failed")
 			return
@@ -237,6 +236,19 @@ func (m *Manager) readLoop() {
 			m.linksLock.Unlock()
 
 		case PING:
+			log.Println("recv PING")
+			timeout := 3 * time.Duration(packet.Payload[0]) * time.Second
+			m.timeout = timeout
+
+			m.initTimer.Do(func() {
+				m.timeoutTimer = time.AfterFunc(timeout, func() {
+					log.Println("recv ping interval")
+					m.Close()
+				})
+			})
+
+			m.timeoutTimer.Stop()
+			m.timeoutTimer.Reset(timeout)
 		}
 	}
 }

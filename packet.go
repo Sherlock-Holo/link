@@ -44,9 +44,9 @@ type Packet struct {
 	ID uint32
 
 	// status 1 bytes
-	PSH  bool // 0b1000,0000
+	/*PSH  bool // 0b1000,0000
 	FIN  bool // 0b0100,0000
-	PING bool // 0b0010,0000
+	PING bool // 0b0010,0000*/
 	// RSV       0b0000,0000
 
 	CMD uint8
@@ -63,15 +63,15 @@ func newPacket(id uint32, status string, payload []byte) *Packet {
 
 	switch strings.ToUpper(status) {
 	case "PSH":
-		packet.PSH = true
+		// packet.PSH = true
 		packet.CMD = PSH
 
 	case "FIN":
-		packet.FIN = true
+		// packet.FIN = true
 		packet.CMD = FIN
 
 	case "PING":
-		packet.PING = true
+		// packet.PING = true
 		packet.CMD = PING
 
 	default:
@@ -108,7 +108,7 @@ func (p *Packet) Bytes() []byte {
 
 	var status uint8
 
-	if p.PSH {
+	/*if p.PSH {
 		status |= 1 << 7
 	}
 
@@ -117,6 +117,17 @@ func (p *Packet) Bytes() []byte {
 	}
 
 	if p.PING {
+		status |= 1 << 5
+	}*/
+
+	switch p.CMD {
+	case PSH:
+		status |= 1 << 7
+
+	case FIN:
+		status |= 1 << 6
+
+	case PING:
 		status |= 1 << 5
 	}
 
@@ -145,17 +156,17 @@ func Decode(b []byte) (*Packet, error) {
 	status := b[5]
 
 	if status&(1<<7) != 0 {
-		p.PSH = true
+		// p.PSH = true
 		p.CMD = PSH
 	}
 
 	if status&(1<<6) != 0 {
-		p.FIN = true
+		// p.FIN = true
 		p.CMD = FIN
 	}
 
 	if status&(1<<5) != 0 {
-		p.PING = true
+		// p.PING = true
 		p.CMD = PING
 	}
 
