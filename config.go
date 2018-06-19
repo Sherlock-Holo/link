@@ -11,5 +11,5 @@ type Config struct {
 var DefaultConfig = &Config{
 	WriteRequests:     1000,
 	AcceptQueueSize:   1000,
-	KeepaliveInterval: 30 * time.Second,
+	KeepaliveInterval: 15 * time.Second,
 }

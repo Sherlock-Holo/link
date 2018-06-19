@@ -44,11 +44,10 @@ type Packet struct {
 	ID uint32
 
 	// status 1 bytes
-	/*PSH  bool // 0b1000,0000
-	FIN  bool // 0b0100,0000
-	PING bool // 0b0010,0000*/
-	// RSV       0b0000,0000
-
+	// PSH  0b1000,0000
+	// FIN  0b0100,0000
+	// PING 0b0010,0000
+	// RSV  0b0000,0000
 	CMD uint8
 
 	Length  uint16
@@ -63,15 +62,12 @@ func newPacket(id uint32, status string, payload []byte) *Packet {
 
 	switch strings.ToUpper(status) {
 	case "PSH":
-		// packet.PSH = true
 		packet.CMD = PSH
 
 	case "FIN":
-		// packet.FIN = true
 		packet.CMD = FIN
 
 	case "PING":
-		// packet.PING = true
 		packet.CMD = PING
 
 	default:
@@ -107,18 +103,6 @@ func (p *Packet) Bytes() []byte {
 	binary.BigEndian.PutUint32(b[1:], p.ID)
 
 	var status uint8
-
-	/*if p.PSH {
-		status |= 1 << 7
-	}
-
-	if p.FIN {
-		status |= 1 << 6
-	}
-
-	if p.PING {
-		status |= 1 << 5
-	}*/
 
 	switch p.CMD {
 	case PSH:
@@ -156,17 +140,14 @@ func Decode(b []byte) (*Packet, error) {
 	status := b[5]
 
 	if status&(1<<7) != 0 {
-		// p.PSH = true
 		p.CMD = PSH
 	}
 
 	if status&(1<<6) != 0 {
-		// p.FIN = true
 		p.CMD = FIN
 	}
 
 	if status&(1<<5) != 0 {
-		// p.PING = true
 		p.CMD = PING
 	}
 

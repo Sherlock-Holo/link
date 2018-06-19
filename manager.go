@@ -36,17 +36,17 @@ type Manager struct {
 	ctxCancelFunc context.CancelFunc // close the manager
 	ctxLock       sync.Mutex         // ensure manager close one time
 
-	writes chan writeRequest
+	writes chan writeRequest // write chan limit link don't write too qiuckly
 
-	acceptQueue chan *Link
+	acceptQueue chan *Link // accept queue, call Accept() will get a waiting link
 
 	interval time.Duration // keepalive interval
 
-	timeoutTimer *time.Timer
+	timeoutTimer *time.Timer // timer check if the manager is timeout
 	timeout      time.Duration
-	initTimer    sync.Once
+	initTimer    sync.Once // make sure Timer init once
 
-	keepaliveTicker *time.Ticker
+	keepaliveTicker *time.Ticker // ticker will send ping regularly
 }
 
 func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
@@ -224,9 +224,6 @@ func (m *Manager) readLoop() {
 				}
 			}
 			m.linksLock.Unlock()
-			if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
-				m.bucketNotify()
-			}
 
 		case FIN:
 			m.linksLock.Lock()
@@ -236,19 +233,24 @@ func (m *Manager) readLoop() {
 			m.linksLock.Unlock()
 
 		case PING:
-			log.Println("recv PING")
 			timeout := 3 * time.Duration(packet.Payload[0]) * time.Second
 			m.timeout = timeout
 
 			m.initTimer.Do(func() {
 				m.timeoutTimer = time.AfterFunc(timeout, func() {
-					log.Println("recv ping interval")
+					log.Println("manager timeout")
 					m.Close()
 				})
+
+				log.Println("init manager timer")
 			})
 
 			m.timeoutTimer.Stop()
 			m.timeoutTimer.Reset(timeout)
+		}
+
+		if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
+			m.bucketNotify()
 		}
 	}
 }
