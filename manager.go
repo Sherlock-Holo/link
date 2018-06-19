@@ -95,7 +95,7 @@ func (m *Manager) keepAlive() {
 	for range m.keepaliveTicker.C {
 		ping := newPacket(127, "PING", []byte{byte(m.interval.Seconds())})
 		if err := m.writePacket(ping); err != nil {
-			log.Println("send ping failed")
+			log.Println("send ping failed", err)
 			return
 		}
 	}
@@ -279,9 +279,9 @@ func (m *Manager) NewLink() (*Link, error) {
 	case <-m.ctx.Done():
 		return nil, errors.New("manager closed")
 	default:
-		m.linksLock.Lock()
+		// m.linksLock.Lock()
 		m.links[link.ID] = link
-		m.linksLock.Unlock()
+		// m.linksLock.Unlock()
 		return link, nil
 	}
 }

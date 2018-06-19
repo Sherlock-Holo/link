@@ -8,8 +8,14 @@ type Config struct {
 	KeepaliveInterval time.Duration
 }
 
-var DefaultConfig = &Config{
+var KeepaliveConfig = &Config{
 	WriteRequests:     1000,
 	AcceptQueueSize:   1000,
 	KeepaliveInterval: 15 * time.Second,
+}
+
+var DefaultConfig = &Config{
+	WriteRequests:     1000,
+	AcceptQueueSize:   1000,
+	KeepaliveInterval: 0,
 }

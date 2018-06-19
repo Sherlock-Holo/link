@@ -71,23 +71,6 @@ func (l *Link) Read(p []byte) (n int, err error) {
 		}
 	}
 
-	// learn from smux, thanks smux!!!
-	/*READ:
-	    l.bufLock.Lock()
-	    n, err = l.buf.Read(p)
-	    l.bufLock.Unlock()
-
-	    if n > 0 {
-		return
-	    }
-
-	    select {
-	    case <-l.readCtx.Done():
-		return 0, io.EOF
-	    case <-l.readEvent:
-		goto READ
-	    }*/
-
 	for {
 		l.bufLock.Lock()
 		n, err = l.buf.Read(p)
@@ -172,10 +155,10 @@ func (l *Link) Close() error {
 	default:
 		l.readCtxCancelFunc()
 
-		select {
+		/*select {
 		case <-l.readEvent: // clear the readEvent
 		default:
-		}
+		}*/
 
 		select {
 		case <-l.writeCtx.Done():
@@ -187,7 +170,7 @@ func (l *Link) Close() error {
 	}
 }
 
-// when recv FIN, link should be closed and should not send FIN too
+// when recv FIN, link should be closed
 func (l *Link) close() {
 	l.bufLock.Lock()
 	l.manager.returnToken(l.buf.Len())
@@ -197,15 +180,15 @@ func (l *Link) close() {
 	defer l.readCtxLock.Unlock()
 
 	select {
-	case <-l.readCtx.Done():
+	case <-l.readCtx.Done(): // manager error, called managerClosed()
 		l.manager.removeLink(l.ID)
 	default:
 		l.readCtxCancelFunc()
 
-		select {
+		/*select {
 		case <-l.readEvent: // clear the readEvent
 		default:
-		}
+		}*/
 
 		select {
 		case <-l.writeCtx.Done():
