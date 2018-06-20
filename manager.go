@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxBucketSize = 1 << 23
+	maxBucketSize = 1 << 20
 )
 
 type writeRequest struct {
