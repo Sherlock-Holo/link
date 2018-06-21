@@ -74,6 +74,17 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 
 	go manager.readLoop()
 	go manager.writeLoop()
+
+	// debug
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			manager.linksLock.Lock()
+			fmt.Println("links size", len(manager.links), manager.links)
+			manager.linksLock.Unlock()
+		}
+	}()
+
 	return manager
 }
 
@@ -159,7 +170,9 @@ func (m *Manager) Close() error {
 
 // recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
+	m.linksLock.Lock()
 	delete(m.links, id)
+	m.linksLock.Unlock()
 }
 
 func (m *Manager) readLoop() {
@@ -183,6 +196,36 @@ func (m *Manager) readLoop() {
 		}
 
 		switch packet.CMD {
+		case PSH:
+			m.linksLock.Lock()
+			if link, ok := m.links[packet.ID]; ok {
+				link.pushPacket(packet)
+
+			} else {
+				// check id is used or not,
+				// make sure don't miss id and don't reopen a closed link.
+				if !(m.usedIDs[uint32(packet.ID)]) {
+					link := newLink(packet.ID, m)
+					m.usedIDs[uint32(packet.ID)] = true
+					m.links[link.ID] = link
+
+					link.pushPacket(packet)
+
+					m.acceptQueue <- link
+				}
+			}
+
+			m.linksLock.Unlock()
+
+		case ACK, FIN:
+			m.linksLock.Lock()
+			if link, ok := m.links[packet.ID]; ok {
+				m.linksLock.Unlock()
+				link.pushPacket(packet)
+				continue // skip the following Unlock()
+			}
+			m.linksLock.Unlock()
+
 		case PING:
 			timeout := 3 * time.Duration(packet.Payload[0]) * time.Second
 			m.timeout = timeout
@@ -199,32 +242,6 @@ func (m *Manager) readLoop() {
 			m.timeoutTimer.Stop()
 			m.timeoutTimer.Reset(timeout)
 
-		case PSH:
-			m.linksLock.Lock()
-			if link, ok := m.links[packet.ID]; ok {
-				link.pushPacket(packet)
-
-			} else {
-				// check id is used or not,
-				// make sure don't miss id and don't reopen a closed link.
-				if !(m.usedIDs[uint32(packet.ID)]) {
-					link := newLink(packet.ID, m)
-					m.usedIDs[uint32(packet.ID)] = true
-					m.links[link.ID] = link
-					link.pushPacket(packet)
-
-					m.acceptQueue <- link
-				}
-			}
-
-			m.linksLock.Unlock()
-
-		default: // FIN, ACK
-			m.linksLock.Lock()
-			if link, ok := m.links[packet.ID]; ok {
-				link.pushPacket(packet)
-			}
-			m.linksLock.Unlock()
 		}
 
 	}

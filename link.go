@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -50,7 +51,7 @@ func newLink(id uint32, m *Manager) *Link {
 
 		readEvent: make(chan struct{}, 1),
 
-		writeWind:  16 * 1024,
+		writeWind:  512 * 1024,
 		writeEvent: make(chan struct{}, 1),
 	}
 
@@ -82,8 +83,8 @@ func (l *Link) pushBytes(p []byte) {
 
 func (l *Link) pushPacket(p *Packet) {
 	switch p.CMD {
-	case FIN:
-		l.close()
+	case PSH:
+		l.pushBytes(p.Payload)
 
 	case ACK:
 		if p.PayloadLength != 2 {
@@ -94,8 +95,9 @@ func (l *Link) pushPacket(p *Packet) {
 			l.writeEventNotify()
 		}
 
-	case PSH:
-		l.pushBytes(p.Payload)
+	case FIN:
+		log.Println("recv FIN")
+		l.close()
 	}
 }
 
@@ -115,22 +117,22 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	for {
 		l.bufLock.Lock()
 		n, err = l.buf.Read(p)
-		if l.buf.Len() > 0 {
+		/*if l.buf.Len() > 0 {
 			l.readEventNotify()
-		}
+		}*/
 		l.bufLock.Unlock()
 
 		if n > 0 {
-			go func() {
-				select {
-				case <-l.readCtx.Done():
-					// when recv FIN, other size doesn't care about the ack because it won't send any packets again
-				default:
+			select {
+			case <-l.readCtx.Done():
+				// when recv FIN, other size doesn't care about the ack because it won't send any packets again
+			default:
+				go func() {
 					ack := make([]byte, 2)
 					binary.BigEndian.PutUint16(ack, uint16(n))
 					l.manager.writePacket(newPacket(l.ID, "ACK", ack))
-				}
-			}()
+				}()
+			}
 
 			return
 		}
@@ -145,8 +147,6 @@ func (l *Link) Read(p []byte) (n int, err error) {
 
 func (l *Link) Write(p []byte) (int, error) {
 	if len(p) == 0 {
-		l.writeEventNotify()
-
 		select {
 		case <-l.writeCtx.Done():
 			return 0, io.ErrClosedPipe
@@ -200,16 +200,16 @@ func (l *Link) Write(p []byte) (int, error) {
 }
 
 func (l *Link) Close() error {
+	l.readCtxLock.Lock()
+	l.writeCtxLock.Lock()
+	defer l.readCtxLock.Unlock()
+	defer l.writeCtxLock.Unlock()
+
 	if l.closed {
 		return errors.New("close again")
 	} else {
 		l.closed = true
 	}
-
-	l.readCtxLock.Lock()
-	l.writeCtxLock.Lock()
-	defer l.readCtxLock.Unlock()
-	defer l.writeCtxLock.Unlock()
 
 	select {
 	case <-l.readCtx.Done():
@@ -221,10 +221,9 @@ func (l *Link) Close() error {
 
 			l.writeEventNotify()
 
-			l.manager.linksLock.Lock()
 			l.manager.removeLink(l.ID)
-			l.manager.linksLock.Unlock()
 
+			log.Println("send FIN")
 			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
 		}
 	default:
@@ -238,21 +237,26 @@ func (l *Link) Close() error {
 
 			l.writeEventNotify()
 
+			log.Println("send FIN")
 			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
 		}
 	}
 }
 
-// when recv FIN, link should be closed
+// when recv FIN, link read should be closed
 func (l *Link) close() {
 	l.readCtxLock.Lock()
 	defer l.readCtxLock.Unlock()
 
 	select {
-	case <-l.readCtx.Done(): // manager error, called managerClosed()
+	case <-l.readCtx.Done(): // manager error or closed, called managerClosed()
 		l.manager.removeLink(l.ID)
+
 	default:
 		l.readCtxCancelFunc()
+
+		l.writeCtxLock.Lock()
+		defer l.writeCtxLock.Unlock()
 
 		select {
 		case <-l.writeCtx.Done():
@@ -263,8 +267,11 @@ func (l *Link) close() {
 }
 
 func (l *Link) CloseWrite() error {
+	log.Println("close write")
 	l.writeCtxLock.Lock()
+	l.readCtxLock.Lock()
 	defer l.writeCtxLock.Unlock()
+	defer l.readCtxLock.Unlock()
 
 	select {
 	case <-l.readCtx.Done():
@@ -276,9 +283,9 @@ func (l *Link) CloseWrite() error {
 
 			l.writeEventNotify()
 
-			l.manager.linksLock.Lock()
 			l.manager.removeLink(l.ID)
-			l.manager.linksLock.Unlock()
+
+			log.Println("send FIN")
 			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
 		}
 	default:
@@ -290,6 +297,7 @@ func (l *Link) CloseWrite() error {
 
 			l.writeEventNotify()
 
+			log.Println("send FIN")
 			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
 		}
 	}
