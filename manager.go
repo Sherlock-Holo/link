@@ -92,7 +92,7 @@ func (m *Manager) keepAlive() {
 	defer m.keepaliveTicker.Stop()
 
 	for range m.keepaliveTicker.C {
-		ping := newPacket(127, "PING", []byte{byte(m.interval.Seconds())})
+		ping := newPacket(127, PING, []byte{byte(m.interval.Seconds())})
 		if err := m.writePacket(ping); err != nil {
 			log.Println("send ping failed", err)
 			return
@@ -171,7 +171,6 @@ func (m *Manager) Close() error {
 // recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
 	// m.linksLock.Lock()
-	log.Println(id)
 	delete(m.links, id)
 	// m.linksLock.Unlock()
 }
@@ -218,7 +217,7 @@ func (m *Manager) readLoop() {
 
 			m.linksLock.Unlock()
 
-		case ACK, FIN:
+		case ACK, FIN, RST:
 			m.linksLock.Lock()
 			if link, ok := m.links[packet.ID]; ok {
 				m.linksLock.Unlock()

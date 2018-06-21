@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 )
@@ -32,6 +33,8 @@ type Link struct {
 	writeEvent chan struct{}
 
 	closed bool
+
+	rst chan struct{} // RST, like TCP RST
 }
 
 func newLink(id uint32, m *Manager) *Link {
@@ -51,8 +54,10 @@ func newLink(id uint32, m *Manager) *Link {
 
 		readEvent: make(chan struct{}, 1),
 
-		writeWind:  512 * 1024,
+		writeWind:  768 * 1024,
 		writeEvent: make(chan struct{}, 1),
+
+		rst: make(chan struct{}),
 	}
 
 	link.writeEventNotify()
@@ -96,8 +101,11 @@ func (l *Link) pushPacket(p *Packet) {
 		}
 
 	case FIN:
-		log.Println("recv FIN")
+		log.Println("id", l.ID, "recv FIN")
 		l.close()
+
+	case RST:
+		l.errorClose()
 	}
 }
 
@@ -108,7 +116,19 @@ func (l *Link) Read(p []byte) (n int, err error) {
 			if l.buf.Len() > 0 {
 				return 0, nil
 			}
-			return 0, io.EOF
+
+			select {
+			case <-l.rst:
+				return 0, net.OpError{
+					Net: "link",
+					Op:  "Read",
+					Err: errors.New("link reset by peer"),
+				}.Err
+
+			default:
+				return 0, io.EOF
+			}
+
 		default:
 			return 0, nil
 		}
@@ -117,9 +137,9 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	for {
 		l.bufLock.Lock()
 		n, err = l.buf.Read(p)
-		/*if l.buf.Len() > 0 {
+		if l.buf.Len() > 0 {
 			l.readEventNotify()
-		}*/
+		}
 		l.bufLock.Unlock()
 
 		if n > 0 {
@@ -130,7 +150,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 				go func() {
 					ack := make([]byte, 2)
 					binary.BigEndian.PutUint16(ack, uint16(n))
-					l.manager.writePacket(newPacket(l.ID, "ACK", ack))
+					l.manager.writePacket(newPacket(l.ID, ACK, ack))
 				}()
 			}
 
@@ -139,7 +159,18 @@ func (l *Link) Read(p []byte) (n int, err error) {
 
 		select {
 		case <-l.readCtx.Done():
-			return 0, io.EOF
+			select {
+			case <-l.rst:
+				return 0, net.OpError{
+					Net: "link",
+					Op:  "Read",
+					Err: errors.New("link reset by peer"),
+				}.Err
+
+			default:
+				return 0, io.EOF
+			}
+
 		case <-l.readEvent:
 		}
 	}
@@ -158,12 +189,16 @@ func (l *Link) Write(p []byte) (int, error) {
 	if len(p) <= 65535 {
 		select {
 		case <-l.writeCtx.Done():
-			l.writeEventNotify()
+			// dry writeEvent may sure never case <-l.writeEvent
+			select {
+			case <-l.writeEvent:
+			default:
+			}
 
 			return 0, io.ErrClosedPipe
 
 		case <-l.writeEvent:
-			if err := l.manager.writePacket(newPacket(l.ID, "PSH", p)); err != nil {
+			if err := l.manager.writePacket(newPacket(l.ID, PSH, p)); err != nil {
 				l.writeEventNotify()
 				return 0, err
 			}
@@ -180,7 +215,11 @@ func (l *Link) Write(p []byte) (int, error) {
 		for _, packet := range packets {
 			select {
 			case <-l.writeCtx.Done():
-				l.writeEventNotify()
+				// dry writeEvent may sure never case <-l.writeEvent
+				select {
+				case <-l.writeEvent:
+				default:
+				}
 
 				return 0, io.ErrClosedPipe
 
@@ -200,49 +239,92 @@ func (l *Link) Write(p []byte) (int, error) {
 }
 
 func (l *Link) Close() error {
-	l.readCtxLock.Lock()
-	l.writeCtxLock.Lock()
-	defer l.readCtxLock.Unlock()
-	defer l.writeCtxLock.Unlock()
-
 	if l.closed {
 		return errors.New("close again")
 	} else {
 		l.closed = true
 	}
 
+	select {
+	case <-l.rst:
+		return nil
+	default:
+	}
+
 	defer l.manager.removeLink(l.ID)
+
+	// dry writeEvent
+	select {
+	case <-l.writeEvent:
+	default:
+	}
+
+	l.readCtxLock.Lock()
+	l.writeCtxLock.Lock()
 
 	select {
 	case <-l.readCtx.Done():
+		l.readCtxLock.Unlock()
+
 		select {
 		case <-l.writeCtx.Done():
+
+			l.writeCtxLock.Unlock()
+
 			return nil
 		default:
 			l.writeCtxCancelFunc()
 
-			l.writeEventNotify()
+			l.writeCtxLock.Unlock()
 
-			// l.manager.removeLink(l.ID)
+			l.manager.removeLink(l.ID)
 
-			log.Println("send FIN")
-			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
+			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		}
 	default:
 		l.readCtxCancelFunc()
+		l.readCtxLock.Unlock()
 
 		select {
 		case <-l.writeCtx.Done():
+
+			l.writeCtxLock.Unlock()
+
 			return nil
+
 		default:
 			l.writeCtxCancelFunc()
 
-			l.writeEventNotify()
+			l.writeCtxLock.Unlock()
 
-			log.Println("send FIN")
-			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
+			return l.manager.writePacket(newPacket(l.ID, RST, nil))
 		}
 	}
+}
+
+func (l *Link) errorClose() {
+	l.writeCtxLock.Lock()
+	l.readCtxLock.Lock()
+	defer l.writeCtxLock.Unlock()
+	defer l.readCtxLock.Unlock()
+
+	// when managerClosed is calling, may some links RST
+	select {
+	case <-l.rst:
+	default:
+		close(l.rst)
+	}
+
+	// dry writeEvent
+	select {
+	case <-l.writeEvent:
+	default:
+	}
+
+	l.manager.removeLink(l.ID)
+
+	l.readCtxCancelFunc()
+	l.writeCtxCancelFunc()
 }
 
 // when recv FIN, link read should be closed
@@ -276,6 +358,18 @@ func (l *Link) CloseWrite() error {
 	defer l.readCtxLock.Unlock()
 
 	select {
+	case <-l.rst:
+		return nil
+	default:
+	}
+
+	// dry writeEvent
+	select {
+	case <-l.writeEvent:
+	default:
+	}
+
+	select {
 	case <-l.readCtx.Done():
 		defer l.manager.removeLink(l.ID)
 
@@ -285,12 +379,10 @@ func (l *Link) CloseWrite() error {
 		default:
 			l.writeCtxCancelFunc()
 
-			l.writeEventNotify()
-
 			// l.manager.removeLink(l.ID)
 
-			log.Println("send FIN")
-			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
+			log.Println("id", l.ID, "3 send FIN")
+			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		}
 	default:
 		select {
@@ -299,16 +391,14 @@ func (l *Link) CloseWrite() error {
 		default:
 			l.writeCtxCancelFunc()
 
-			l.writeEventNotify()
-
-			log.Println("send FIN")
-			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))
+			log.Println("id", l.ID, "4 send FIN")
+			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		}
 	}
 }
 
 func (l *Link) managerClosed() {
-	l.readCtxLock.Lock()
+	/*l.readCtxLock.Lock()
 	l.writeCtxLock.Lock()
 	defer l.readCtxLock.Unlock()
 	defer l.writeCtxLock.Unlock()
@@ -324,6 +414,11 @@ func (l *Link) managerClosed() {
 	default:
 		l.writeCtxCancelFunc()
 
-		l.writeEventNotify()
-	}
+		// dry writeEvent
+		select {
+		case <-l.writeEvent:
+		default:
+		}
+	}*/
+	l.errorClose()
 }

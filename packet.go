@@ -3,7 +3,6 @@ package link
 import (
 	"encoding/binary"
 	"fmt"
-	"strings"
 )
 
 type VersionErr struct {
@@ -21,7 +20,8 @@ const (
 	PSH  = 128
 	FIN  = 64
 	PING = 32
-	ACK  = 16 // 2 bytes data, uint16, the other size has read [uint16] bytes data
+	ACK  = 16 // 2 bytes data, uint16, the other side has read [uint16] bytes data
+	RST  = 8  // tell other side there is an error, we should close link immediately
 )
 
 type PacketHeader []byte
@@ -49,6 +49,8 @@ type Packet struct {
 	// FIN  0b0100,0000
 	// PING 0b0010,0000
 	// ACK  0b0001,0000
+	// RST  0b0000,1000
+
 	// RSV  0b0000,0000
 	CMD uint8
 
@@ -56,27 +58,30 @@ type Packet struct {
 	Payload       []byte
 }
 
-func newPacket(id uint32, status string, payload []byte) *Packet {
+func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	packet := Packet{
 		Version: Version,
 		ID:      id,
 	}
 
-	switch strings.ToUpper(status) {
-	case "PSH":
+	switch cmd {
+	case PSH:
 		packet.CMD = PSH
 
-	case "FIN":
+	case FIN:
 		packet.CMD = FIN
 
-	case "PING":
+	case PING:
 		packet.CMD = PING
 
-	case "ACK":
+	case ACK:
 		packet.CMD = ACK
 
+	case RST:
+		packet.CMD = RST
+
 	default:
-		panic("not allow status " + status)
+		panic(fmt.Sprintf("not allowed cmd code %d", cmd))
 	}
 
 	if payload != nil {
@@ -89,16 +94,16 @@ func newPacket(id uint32, status string, payload []byte) *Packet {
 
 func split(id uint32, p []byte) []*Packet {
 	if len(p) <= 65536 {
-		return []*Packet{newPacket(id, "PSH", p)}
+		return []*Packet{newPacket(id, PSH, p)}
 	}
 
 	var ps []*Packet
 
 	for len(p) > 65535 {
-		ps = append(ps, newPacket(id, "PSH", p))
+		ps = append(ps, newPacket(id, PSH, p))
 		p = p[65535:]
 	}
-	ps = append(ps, newPacket(id, "PSH", p)) // append last data which size <= 65535
+	ps = append(ps, newPacket(id, PSH, p)) // append last data which size <= 65535
 	return ps
 }
 
@@ -121,6 +126,9 @@ func (p *Packet) Bytes() []byte {
 
 	case ACK:
 		cmdByte |= 1 << 4
+
+	case RST:
+		cmdByte |= 1 << 3
 	}
 
 	b = append(b, cmdByte)
@@ -161,6 +169,10 @@ func Decode(b []byte) (*Packet, error) {
 
 	if cmdByte&(1<<4) != 0 {
 		p.CMD = ACK
+	}
+
+	if cmdByte&(1<<3) != 0 {
+		p.CMD = RST
 	}
 
 	p.PayloadLength = binary.BigEndian.Uint16(b[6:8])
