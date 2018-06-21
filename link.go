@@ -277,6 +277,8 @@ func (l *Link) CloseWrite() error {
 
 	select {
 	case <-l.readCtx.Done():
+		defer l.manager.removeLink(l.ID)
+
 		select {
 		case <-l.writeCtx.Done():
 			return errors.New("close write on a closed link")
@@ -285,7 +287,7 @@ func (l *Link) CloseWrite() error {
 
 			l.writeEventNotify()
 
-			l.manager.removeLink(l.ID)
+			// l.manager.removeLink(l.ID)
 
 			log.Println("send FIN")
 			return l.manager.writePacket(newPacket(l.ID, "FIN", nil))

@@ -170,9 +170,10 @@ func (m *Manager) Close() error {
 
 // recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
-	m.linksLock.Lock()
+	// m.linksLock.Lock()
+	log.Println(id)
 	delete(m.links, id)
-	m.linksLock.Unlock()
+	// m.linksLock.Unlock()
 }
 
 func (m *Manager) readLoop() {
