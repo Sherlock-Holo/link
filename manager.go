@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-const (
-	maxBucketSize = 1 << 20
-)
-
 type writeRequest struct {
 	packet  *Packet
 	written chan struct{} // if written, close this chan
@@ -28,9 +24,6 @@ type Manager struct {
 
 	maxID   int32
 	usedIDs map[uint32]bool
-
-	bucket      int32         // read bucket, only manager readLoop and link.Read will modify it.
-	bucketEvent chan struct{} // every time recv PSH and bucket is bigger than 0, will notify, link.Read will modify.
 
 	ctx           context.Context    // ctx.Done() can recv means manager is closed
 	ctxCancelFunc context.CancelFunc // close the manager
@@ -60,9 +53,6 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 		maxID:   -1,
 		usedIDs: make(map[uint32]bool),
 
-		bucket:      maxBucketSize,
-		bucketEvent: make(chan struct{}, 1),
-
 		ctx:           ctx,
 		ctxCancelFunc: cancelFunc,
 	}
@@ -82,8 +72,6 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 		go manager.keepAlive()
 	}
 
-	manager.bucketNotify()
-
 	go manager.readLoop()
 	go manager.writeLoop()
 	return manager
@@ -98,13 +86,6 @@ func (m *Manager) keepAlive() {
 			log.Println("send ping failed", err)
 			return
 		}
-	}
-}
-
-func (m *Manager) bucketNotify() {
-	select {
-	case m.bucketEvent <- struct{}{}:
-	default:
 	}
 }
 
@@ -176,12 +157,6 @@ func (m *Manager) Close() error {
 	}
 }
 
-func (m *Manager) returnToken(n int) {
-	if atomic.AddInt32(&m.bucket, int32(n)) > 0 {
-		m.bucketNotify()
-	}
-}
-
 // recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
 	delete(m.links, id)
@@ -192,7 +167,7 @@ func (m *Manager) readLoop() {
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-m.bucketEvent:
+		default:
 		}
 
 		packet, err := m.readPacket()
@@ -208,46 +183,6 @@ func (m *Manager) readLoop() {
 		}
 
 		switch packet.CMD {
-		case PSH:
-			m.linksLock.Lock()
-			if link, ok := m.links[packet.ID]; ok {
-				link.pushBytes(packet.Payload)
-
-				m.linksLock.Unlock()
-
-				if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
-					m.bucketNotify()
-				}
-
-			} else {
-				// check id is used or not,
-				// make sure don't miss id and don't reopen a closed link.
-				if !(m.usedIDs[uint32(packet.ID)]) {
-					link := newLink(packet.ID, m)
-					m.usedIDs[uint32(packet.ID)] = true
-					m.links[link.ID] = link
-					link.pushBytes(packet.Payload)
-					m.acceptQueue <- link
-
-					m.linksLock.Unlock()
-
-					if atomic.AddInt32(&m.bucket, -int32(packet.Length)) > 0 {
-						m.bucketNotify()
-					}
-				} else {
-					m.bucketNotify()
-				}
-			}
-
-		case FIN:
-			m.linksLock.Lock()
-			if link, ok := m.links[packet.ID]; ok {
-				link.close()
-			}
-			m.linksLock.Unlock()
-
-			m.bucketNotify()
-
 		case PING:
 			timeout := 3 * time.Duration(packet.Payload[0]) * time.Second
 			m.timeout = timeout
@@ -264,8 +199,34 @@ func (m *Manager) readLoop() {
 			m.timeoutTimer.Stop()
 			m.timeoutTimer.Reset(timeout)
 
-			m.bucketNotify()
+		case PSH:
+			m.linksLock.Lock()
+			if link, ok := m.links[packet.ID]; ok {
+				link.pushPacket(packet)
+
+			} else {
+				// check id is used or not,
+				// make sure don't miss id and don't reopen a closed link.
+				if !(m.usedIDs[uint32(packet.ID)]) {
+					link := newLink(packet.ID, m)
+					m.usedIDs[uint32(packet.ID)] = true
+					m.links[link.ID] = link
+					link.pushPacket(packet)
+
+					m.acceptQueue <- link
+				}
+			}
+
+			m.linksLock.Unlock()
+
+		default: // FIN, ACK
+			m.linksLock.Lock()
+			if link, ok := m.links[packet.ID]; ok {
+				link.pushPacket(packet)
+			}
+			m.linksLock.Unlock()
 		}
+
 	}
 }
 
