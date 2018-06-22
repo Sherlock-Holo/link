@@ -219,11 +219,11 @@ func (l *Link) Write(p []byte) (int, error) {
 		for _, packet := range packets {
 			select {
 			case <-l.writeCtx.Done():
-				// dry writeEvent may sure never case <-l.writeEvent
+				/*// dry writeEvent may sure never case <-l.writeEvent
 				select {
 				case <-l.writeEvent:
 				default:
-				}
+				}*/
 
 				return 0, io.ErrClosedPipe
 
