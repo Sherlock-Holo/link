@@ -81,8 +81,8 @@ func (l *Link) writeEventNotify() {
 func (l *Link) pushBytes(p []byte) {
 	l.bufLock.Lock()
 	l.buf.Write(p)
-	l.readEventNotify()
 	l.bufLock.Unlock()
+	l.readEventNotify()
 }
 
 func (l *Link) pushPacket(p *Packet) {
@@ -135,15 +135,15 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	for {
 		l.bufLock.Lock()
 		n, err = l.buf.Read(p)
-		if l.buf.Len() > 0 {
+		/*if l.buf.Len() > 0 {
 			l.readEventNotify()
-		}
+		}*/
 		l.bufLock.Unlock()
 
 		if n > 0 {
 			select {
 			case <-l.readCtx.Done():
-				// when link read closed or RST, other size doesn't care about the ack
+				// when link read closed or RST, other side doesn't care about the ack
 				// because it won't send any packets again
 			default:
 				go func() {
@@ -171,6 +171,11 @@ func (l *Link) Read(p []byte) (n int, err error) {
 			}
 
 		case <-l.readEvent:
+			l.bufLock.Lock()
+			if l.buf.Len() > len(p) {
+				l.readEventNotify()
+			}
+			l.bufLock.Unlock()
 		}
 	}
 }
@@ -188,11 +193,11 @@ func (l *Link) Write(p []byte) (int, error) {
 	if len(p) <= 65535 {
 		select {
 		case <-l.writeCtx.Done():
-			// dry writeEvent may sure never case <-l.writeEvent
+			/*// dry writeEvent may sure never case <-l.writeEvent
 			select {
 			case <-l.writeEvent:
 			default:
-			}
+			}*/
 
 			return 0, io.ErrClosedPipe
 
@@ -276,7 +281,7 @@ func (l *Link) Close() error {
 
 			l.writeCtxLock.Unlock()
 
-			l.manager.removeLink(l.ID)
+			// l.manager.removeLink(l.ID)
 
 			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		}
@@ -295,6 +300,13 @@ func (l *Link) Close() error {
 			l.writeCtxCancelFunc()
 
 			l.writeCtxLock.Unlock()
+
+			// notify thi link RST
+			select {
+			case <-l.rst:
+			default:
+				close(l.rst)
+			}
 
 			return l.manager.writePacket(newPacket(l.ID, RST, nil))
 		}
@@ -332,7 +344,9 @@ func (l *Link) close() {
 	defer l.readCtxLock.Unlock()
 
 	select {
-	case <-l.readCtx.Done(): // manager error or closed, called managerClosed()
+	// manager error or closed, called managerClosed(),
+	// it won't be RST because RST will call errorClose() instead of this.
+	case <-l.readCtx.Done():
 		l.manager.removeLink(l.ID)
 
 	default:
