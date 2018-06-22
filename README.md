@@ -7,6 +7,14 @@ link low level should implement `io.ReadWriteCloser`
 - `io.ReadWritCloser`
 - `io.closeWriter`
 
+## version
+### not recommend
+- version 0
+- version 1
+
+### recommend
+- version 2 or master
+
 ## Thanks
 - [@Hex11](https://github.com/hex11)
 He gives me a lot of help to broaden my horizon and mind.
