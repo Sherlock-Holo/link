@@ -342,14 +342,9 @@ func (l *Link) closeRead() {
 	defer l.writeCtxLock.Unlock()
 
 	select {
-	// manager error or closed, called managerClosed(),
-	// it won't be RST because RST will call errorClose() instead of this.
-	case <-l.readCtx.Done():
-		l.manager.linksLock.Lock()
-		l.manager.removeLink(l.ID)
-		l.manager.linksLock.Unlock()
 
-		l.releaseBuf()
+	// link read closed but haven't call closeRead, means Close or errClose called.
+	case <-l.readCtx.Done():
 
 	default:
 		l.readCtxCancelFunc()
