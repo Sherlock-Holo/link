@@ -75,7 +75,7 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	go manager.readLoop()
 	go manager.writeLoop()
 
-	/*// debug
+	// debug
 	go func() {
 		for {
 			time.Sleep(2 * time.Second)
@@ -83,7 +83,7 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 			fmt.Println("links size", len(manager.links), manager.links)
 			manager.linksLock.Unlock()
 		}
-	}()*/
+	}()
 
 	return manager
 }
