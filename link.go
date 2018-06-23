@@ -246,7 +246,11 @@ func (l *Link) Close() error {
 	default:
 	}
 
-	defer l.manager.removeLink(l.ID)
+	defer func() {
+		l.manager.linksLock.Lock()
+		l.manager.removeLink(l.ID)
+		l.manager.linksLock.Unlock()
+	}()
 
 	// dry writeEvent
 	select {
@@ -323,7 +327,9 @@ func (l *Link) errorClose() {
 	default:
 	}
 
+	l.manager.linksLock.Lock()
 	l.manager.removeLink(l.ID)
+	l.manager.linksLock.Unlock()
 
 	l.readCtxCancelFunc()
 	l.writeCtxCancelFunc()
@@ -338,7 +344,9 @@ func (l *Link) close() {
 	// manager error or closed, called managerClosed(),
 	// it won't be RST because RST will call errorClose() instead of this.
 	case <-l.readCtx.Done():
+		l.manager.linksLock.Lock()
 		l.manager.removeLink(l.ID)
+		l.manager.linksLock.Unlock()
 
 	default:
 		l.readCtxCancelFunc()
@@ -348,7 +356,9 @@ func (l *Link) close() {
 
 		select {
 		case <-l.writeCtx.Done():
+			l.manager.linksLock.Lock()
 			l.manager.removeLink(l.ID)
+			l.manager.linksLock.Unlock()
 		default:
 		}
 	}
@@ -374,7 +384,11 @@ func (l *Link) CloseWrite() error {
 
 	select {
 	case <-l.readCtx.Done():
-		defer l.manager.removeLink(l.ID)
+		defer func() {
+			l.manager.linksLock.Lock()
+			l.manager.removeLink(l.ID)
+			l.manager.linksLock.Unlock()
+		}()
 
 		select {
 		case <-l.writeCtx.Done():
