@@ -35,8 +35,6 @@ type Link struct {
 	writeWind  int32
 	writeEvent chan struct{}
 
-	closed bool
-
 	rst int32
 }
 
@@ -230,11 +228,10 @@ func (l *Link) Write(p []byte) (int, error) {
 }
 
 func (l *Link) Close() error {
-	if l.closed {
-		return errors.New("close again")
-	} else {
-		l.closed = true
-	}
+	l.readCtxLock.Lock()
+	l.writeCtxLock.Lock()
+	defer l.readCtxLock.Unlock()
+	defer l.writeCtxLock.Unlock()
 
 	if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 		return nil
@@ -254,41 +251,24 @@ func (l *Link) Close() error {
 	default:
 	}
 
-	l.readCtxLock.Lock()
-	l.writeCtxLock.Lock()
-
 	select {
 	case <-l.readCtx.Done():
-		l.readCtxLock.Unlock()
-
 		select {
 		case <-l.writeCtx.Done():
-
-			l.writeCtxLock.Unlock()
-
 			return nil
+
 		default:
 			l.writeCtxCancelFunc()
-
-			l.writeCtxLock.Unlock()
-
 			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		}
 	default:
 		l.readCtxCancelFunc()
-		l.readCtxLock.Unlock()
-
 		select {
 		case <-l.writeCtx.Done():
-
-			l.writeCtxLock.Unlock()
-
 			return nil
 
 		default:
 			l.writeCtxCancelFunc()
-
-			l.writeCtxLock.Unlock()
 
 			atomic.StoreInt32(&l.rst, 1)
 
@@ -329,8 +309,7 @@ func (l *Link) closeRead() {
 	defer l.writeCtxLock.Unlock()
 
 	select {
-
-	// link read closed but haven't call closeRead, means Close or errClose called.
+	// link read closed but haven't call closeRead, means Close() or errClose() called.
 	case <-l.readCtx.Done():
 
 	default:
@@ -410,8 +389,4 @@ func (l *Link) releaseBuf() {
 		l.buf.Reset()
 		bufferPool.Put(&l.buf)
 	})
-}
-
-func (l *Link) IsClosed() bool {
-	return l.closed
 }
