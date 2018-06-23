@@ -37,7 +37,7 @@ type Link struct {
 
 	closed bool
 
-	rst chan struct{} // RST, like TCP RST
+	rst int32
 }
 
 func newLink(id uint32, m *Manager) *Link {
@@ -61,8 +61,6 @@ func newLink(id uint32, m *Manager) *Link {
 
 		writeWind:  writeWind,
 		writeEvent: make(chan struct{}, 1),
-
-		rst: make(chan struct{}),
 	}
 
 	link.writeEventNotify()
@@ -119,15 +117,13 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		select {
 		case <-l.readCtx.Done():
-			select {
-			case <-l.rst:
+			if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 				return 0, net.OpError{
 					Net: "link",
 					Op:  "Read",
 					Err: errors.New("link reset by peer"),
 				}.Err
-
-			default:
+			} else {
 				if l.buf.Len() > 0 {
 					return 0, nil
 				}
@@ -165,24 +161,17 @@ func (l *Link) Read(p []byte) (n int, err error) {
 
 		select {
 		case <-l.readCtx.Done():
-			select {
-			case <-l.rst:
+			if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 				return 0, net.OpError{
 					Net: "link",
 					Op:  "Read",
 					Err: errors.New("link reset by peer"),
 				}.Err
-
-			default:
+			} else {
 				return 0, io.EOF
 			}
 
 		case <-l.readEvent:
-			/*l.bufLock.Lock()
-			if l.buf.Len() > len(p) {
-				l.readEventNotify()
-			}
-			l.bufLock.Unlock()*/
 			if atomic.LoadInt32(&l.bufSize) > int32(len(p)) {
 				l.readEventNotify()
 			}
@@ -247,10 +236,8 @@ func (l *Link) Close() error {
 		l.closed = true
 	}
 
-	select {
-	case <-l.rst:
+	if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 		return nil
-	default:
 	}
 
 	defer func() {
@@ -303,12 +290,7 @@ func (l *Link) Close() error {
 
 			l.writeCtxLock.Unlock()
 
-			// notify thi link RST
-			select {
-			case <-l.rst:
-			default:
-				close(l.rst)
-			}
+			atomic.StoreInt32(&l.rst, 1)
 
 			return l.manager.writePacket(newPacket(l.ID, RST, nil))
 		}
@@ -321,12 +303,7 @@ func (l *Link) errorClose() {
 	defer l.writeCtxLock.Unlock()
 	defer l.readCtxLock.Unlock()
 
-	// when managerClosed is calling, may some links RST
-	select {
-	case <-l.rst:
-	default:
-		close(l.rst)
-	}
+	atomic.StoreInt32(&l.rst, 1)
 
 	// dry writeEvent
 	select {
@@ -378,10 +355,8 @@ func (l *Link) CloseWrite() error {
 	defer l.writeCtxLock.Unlock()
 	defer l.readCtxLock.Unlock()
 
-	select {
-	case <-l.rst:
+	if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 		return nil
-	default:
 	}
 
 	// dry writeEvent
