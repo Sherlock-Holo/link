@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 )
 
+const writeWind = 768 * 1024
+
 type Link struct {
 	ID uint32
 
@@ -25,6 +27,7 @@ type Link struct {
 	manager *Manager
 
 	buf            bytes.Buffer
+	bufSize        int32 // add it to improve performance
 	bufLock        sync.Mutex
 	readEvent      chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call readEventNotify
 	releaseBufOnce sync.Once
@@ -56,7 +59,7 @@ func newLink(id uint32, m *Manager) *Link {
 
 		readEvent: make(chan struct{}, 1),
 
-		writeWind:  768 * 1024,
+		writeWind:  writeWind,
 		writeEvent: make(chan struct{}, 1),
 
 		rst: make(chan struct{}),
@@ -85,6 +88,8 @@ func (l *Link) pushBytes(p []byte) {
 	l.bufLock.Lock()
 	l.buf.Write(p)
 	l.bufLock.Unlock()
+
+	atomic.AddInt32(&l.bufSize, int32(len(p)))
 	l.readEventNotify()
 }
 
@@ -141,6 +146,8 @@ func (l *Link) Read(p []byte) (n int, err error) {
 		l.bufLock.Unlock()
 
 		if n > 0 {
+			atomic.AddInt32(&l.bufSize, -int32(n))
+
 			select {
 			case <-l.readCtx.Done():
 				// when link read closed or RST, other side doesn't care about the ack
@@ -171,11 +178,14 @@ func (l *Link) Read(p []byte) (n int, err error) {
 			}
 
 		case <-l.readEvent:
-			l.bufLock.Lock()
+			/*l.bufLock.Lock()
 			if l.buf.Len() > len(p) {
 				l.readEventNotify()
 			}
-			l.bufLock.Unlock()
+			l.bufLock.Unlock()*/
+			if atomic.LoadInt32(&l.bufSize) > int32(len(p)) {
+				l.readEventNotify()
+			}
 		}
 	}
 }
