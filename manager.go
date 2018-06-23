@@ -286,3 +286,12 @@ func (m *Manager) Accept() (*Link, error) {
 		return link, nil
 	}
 }
+
+func (m *Manager) IsClosed() bool {
+	select {
+	case <-m.ctx.Done():
+		return true
+	default:
+		return false
+	}
+}

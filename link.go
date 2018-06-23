@@ -135,9 +135,6 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	for {
 		l.bufLock.Lock()
 		n, err = l.buf.Read(p)
-		/*if l.buf.Len() > 0 {
-			l.readEventNotify()
-		}*/
 		l.bufLock.Unlock()
 
 		if n > 0 {
@@ -193,12 +190,6 @@ func (l *Link) Write(p []byte) (int, error) {
 	if len(p) <= 65535 {
 		select {
 		case <-l.writeCtx.Done():
-			/*// dry writeEvent may sure never case <-l.writeEvent
-			select {
-			case <-l.writeEvent:
-			default:
-			}*/
-
 			return 0, io.ErrClosedPipe
 
 		case <-l.writeEvent:
@@ -407,4 +398,8 @@ func (l *Link) CloseWrite() error {
 
 func (l *Link) managerClosed() {
 	l.errorClose()
+}
+
+func (l *Link) IsClosed() bool {
+	return l.closed
 }
