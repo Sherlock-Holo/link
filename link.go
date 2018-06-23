@@ -194,7 +194,7 @@ func (l *Link) Write(p []byte) (int, error) {
 
 		case <-l.writeEvent:
 			if err := l.manager.writePacket(newPacket(l.ID, PSH, p)); err != nil {
-				l.writeEventNotify()
+				// l.writeEventNotify()
 				return 0, err
 			}
 
@@ -214,7 +214,7 @@ func (l *Link) Write(p []byte) (int, error) {
 
 			case <-l.writeEvent:
 				if err := l.manager.writePacket(packet); err != nil {
-					l.writeEventNotify()
+					// l.writeEventNotify()
 					return 0, err
 				}
 
@@ -262,18 +262,17 @@ func (l *Link) Close() error {
 			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		}
 	default:
+		// ensure when other side is waiting for writing cancel the write
 		l.readCtxCancelFunc()
 		select {
 		case <-l.writeCtx.Done():
-			return nil
-
 		default:
 			l.writeCtxCancelFunc()
-
-			atomic.StoreInt32(&l.rst, 1)
-
-			return l.manager.writePacket(newPacket(l.ID, RST, nil))
 		}
+
+		atomic.StoreInt32(&l.rst, 1)
+
+		return l.manager.writePacket(newPacket(l.ID, RST, nil))
 	}
 }
 
