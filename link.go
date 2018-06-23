@@ -337,7 +337,9 @@ func (l *Link) errorClose() {
 // when recv FIN, link read should be closed
 func (l *Link) closeRead() {
 	l.readCtxLock.Lock()
+	l.writeCtxLock.Lock()
 	defer l.readCtxLock.Unlock()
+	defer l.writeCtxLock.Unlock()
 
 	select {
 	// manager error or closed, called managerClosed(),
@@ -352,12 +354,8 @@ func (l *Link) closeRead() {
 	default:
 		l.readCtxCancelFunc()
 
-		l.writeCtxLock.Lock()
-
 		select {
 		case <-l.writeCtx.Done():
-			l.writeCtxLock.Unlock()
-
 			l.manager.linksLock.Lock()
 			l.manager.removeLink(l.ID)
 			l.manager.linksLock.Unlock()
@@ -365,7 +363,6 @@ func (l *Link) closeRead() {
 			l.releaseBuf()
 
 		default:
-			l.writeCtxLock.Unlock()
 		}
 	}
 }
