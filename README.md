@@ -15,6 +15,9 @@ link low level should implement `io.ReadWriteCloser`
 ### recommend
 - version 2 or master
 
+## API doc
+godoc [link](https://godoc.org/github.com/Sherlock-Holo/link)
+
 ## Thanks
 - [@Hex11](https://github.com/hex11)
 He gives me a lot of help to broaden my horizon and mind.
