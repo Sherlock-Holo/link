@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,6 +76,14 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 
 	go manager.readLoop()
 	go manager.writeLoop()
+
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
+	go func() {
+		<-interrupt
+		manager.Close()
+	}()
 
 	// debug
 	/*go func() {
