@@ -53,7 +53,6 @@ type Packet struct {
 	// PING 0b0010,0000
 	// ACK  0b0001,0000
 	// RST  0b0000,1000
-
 	// RSV  0b0000,0000
 	CMD uint8
 
