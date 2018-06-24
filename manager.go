@@ -55,13 +55,15 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 
 		ctx:           ctx,
 		ctxCancelFunc: cancelFunc,
+
+		writes: make(chan writeRequest, 1),
 	}
 
 	if config == nil {
 		config = DefaultConfig
 	}
 
-	manager.writes = make(chan writeRequest, config.WriteRequests)
+	// manager.writes = make(chan writeRequest, config.WriteRequests)
 	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
 
 	if config.KeepaliveInterval > 0 {

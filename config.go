@@ -3,6 +3,7 @@ package link
 import "time"
 
 type Config struct {
+	// Deprecated
 	WriteRequests     int
 	AcceptQueueSize   int
 	KeepaliveInterval time.Duration

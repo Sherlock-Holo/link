@@ -122,7 +122,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 					Err: errors.New("link reset by peer"),
 				}.Err
 			} else {
-				if l.buf.Len() > 0 {
+				if l.bufSize > 0 {
 					return 0, nil
 				}
 
