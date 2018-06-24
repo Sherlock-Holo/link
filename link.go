@@ -259,7 +259,9 @@ func (l *Link) Close() error {
 
 		default:
 			l.writeCtxCancelFunc()
-			return l.manager.writePacket(newPacket(l.ID, FIN, nil))
+			// return l.manager.writePacket(newPacket(l.ID, FIN, nil))
+			go l.manager.writePacket(newPacket(l.ID, FIN, nil))
+			return nil
 		}
 	default:
 		// ensure when other side is waiting for writing cancel the write
@@ -272,7 +274,9 @@ func (l *Link) Close() error {
 
 		atomic.StoreInt32(&l.rst, 1)
 
-		return l.manager.writePacket(newPacket(l.ID, RST, nil))
+		// return l.manager.writePacket(newPacket(l.ID, RST, nil))
+		go l.manager.writePacket(newPacket(l.ID, RST, nil))
+		return nil
 	}
 }
 
@@ -375,7 +379,9 @@ func (l *Link) CloseWrite() error {
 		default:
 		}
 
-		return l.manager.writePacket(newPacket(l.ID, FIN, nil))
+		// return l.manager.writePacket(newPacket(l.ID, FIN, nil))
+		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
+		return nil
 	}
 }
 
