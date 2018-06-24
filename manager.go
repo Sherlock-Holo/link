@@ -164,15 +164,25 @@ func (m *Manager) Close() error {
 		}
 		m.linksLock.Unlock()
 
+		if m.keepaliveTicker != nil {
+			m.keepaliveTicker.Stop()
+			select {
+			case <-m.keepaliveTicker.C:
+			default:
+			}
+		}
+
+		if m.timeoutTimer != nil {
+			m.timeoutTimer.Stop()
+		}
+
 		return m.conn.Close()
 	}
 }
 
 // recv FIN and send FIN will remove link
 func (m *Manager) removeLink(id uint32) {
-	// m.linksLock.Lock()
 	delete(m.links, id)
-	// m.linksLock.Unlock()
 }
 
 func (m *Manager) readLoop() {
@@ -241,9 +251,7 @@ func (m *Manager) readLoop() {
 
 			m.timeoutTimer.Stop()
 			m.timeoutTimer.Reset(timeout)
-
 		}
-
 	}
 }
 
