@@ -42,6 +42,7 @@ type Manager struct {
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
 }
 
+// NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
 func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
@@ -90,6 +91,7 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	return manager
 }
 
+// keepAlive send PING packet to other side to keepalive.
 func (m *Manager) keepAlive() {
 	defer m.keepaliveTicker.Stop()
 
@@ -102,26 +104,27 @@ func (m *Manager) keepAlive() {
 	}
 }
 
+// readPacket read a packet from the underlayer conn.
 func (m *Manager) readPacket() (*Packet, error) {
 	header := make(PacketHeader, HeaderLength)
 	if _, err := io.ReadFull(m.conn, header); err != nil {
 		return nil, fmt.Errorf("manager read packet header: %s", err)
 	}
 
-	if header.Version() != Version {
-		return nil, VersionErr{header.Version()}
+	if header.version() != Version {
+		return nil, VersionErr{header.version()}
 	}
 
 	var payload []byte
 
-	if length := header.PayloadLength(); length != 0 {
+	if length := header.payloadLength(); length != 0 {
 		payload = make([]byte, length)
 		if _, err := io.ReadFull(m.conn, payload); err != nil {
 			return nil, fmt.Errorf("manager read packet payload: %s", err)
 		}
 	}
 
-	packet, err := Decode(append(header, payload...))
+	packet, err := decode(append(header, payload...))
 	if err != nil {
 		return nil, fmt.Errorf("manager read packet decode: %s", err)
 	}
@@ -129,6 +132,7 @@ func (m *Manager) readPacket() (*Packet, error) {
 	return packet, nil
 }
 
+// writePacket write a packet to other side over the underlayer conn.
 func (m *Manager) writePacket(p *Packet) error {
 	req := writeRequest{
 		packet:  p,
@@ -149,6 +153,7 @@ func (m *Manager) writePacket(p *Packet) error {
 	}
 }
 
+// Close close the manager and close all links belong to this manager.
 func (m *Manager) Close() error {
 	m.ctxLock.Lock()
 
@@ -182,11 +187,12 @@ func (m *Manager) Close() error {
 	}
 }
 
-// recv FIN and send FIN will remove link
+// removeLink recv FIN and send FIN will remove link.
 func (m *Manager) removeLink(id uint32) {
 	delete(m.links, id)
 }
 
+// readLoop read packet forever until manager is closed.
 func (m *Manager) readLoop() {
 	for {
 		select {
@@ -257,13 +263,14 @@ func (m *Manager) readLoop() {
 	}
 }
 
+// writeLoop write packet to other side forever until manager is closed.
 func (m *Manager) writeLoop() {
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case req := <-m.writes:
-			_, err := m.conn.Write(req.packet.Bytes())
+			_, err := m.conn.Write(req.packet.bytes())
 			if err != nil {
 				log.Println("manager writeLoop:", err)
 				m.Close()
@@ -274,8 +281,9 @@ func (m *Manager) writeLoop() {
 	}
 }
 
-func (m *Manager) NewLink() (*Link, error) {
-	link := newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
+// NewLink create a Link, if manager is closed, err != nil.
+func (m *Manager) NewLink() (link *Link, err error) {
+	link = newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
 
 	select {
 	case <-m.ctx.Done():
@@ -288,11 +296,12 @@ func (m *Manager) NewLink() (*Link, error) {
 	}
 }
 
-func (m *Manager) Accept() (*Link, error) {
+// Accept accept a new Link, if manager is closed, err != nil.
+func (m *Manager) Accept() (link *Link, err error) {
 	select {
 	case <-m.ctx.Done():
 		return nil, errors.New("broken manager")
-	case link := <-m.acceptQueue:
+	case link = <-m.acceptQueue:
 		return link, nil
 	}
 }

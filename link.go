@@ -27,17 +27,20 @@ type Link struct {
 	manager *Manager
 
 	buf            bytes.Buffer
-	bufSize        int32 // add it to improve performance
+	bufSize        int32 // add it to improve performance, by using atomic instead of read buf.Lne() with bufLock
 	bufLock        sync.Mutex
 	readEvent      chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call readEventNotify
 	releaseBufOnce sync.Once
 
+	// when writeWind < 0, Link.Write will be blocked
 	writeWind  int32
 	writeEvent chan struct{}
 
 	rst int32
 }
 
+// newLink will create a Link, but the Link isn't created at other side,
+// user should write some data to let other side create the link.
 func newLink(id uint32, m *Manager) *Link {
 	rctx, rcancelFunc := context.WithCancel(context.Background())
 	wctx, wcancelFunc := context.WithCancel(context.Background())
@@ -66,6 +69,7 @@ func newLink(id uint32, m *Manager) *Link {
 	return link
 }
 
+// readEventNotify notify link is readable
 func (l *Link) readEventNotify() {
 	select {
 	case l.readEvent <- struct{}{}:
@@ -73,6 +77,7 @@ func (l *Link) readEventNotify() {
 	}
 }
 
+// writeEventNotify notify link is writable
 func (l *Link) writeEventNotify() {
 	select {
 	case l.writeEvent <- struct{}{}:
@@ -80,6 +85,7 @@ func (l *Link) writeEventNotify() {
 	}
 }
 
+// pushBytes push some data to link.buf.
 func (l *Link) pushBytes(p []byte) {
 	l.bufLock.Lock()
 	l.buf.Write(p)
@@ -89,12 +95,15 @@ func (l *Link) pushBytes(p []byte) {
 	l.readEventNotify()
 }
 
+// pushPacket when manager recv a packet about this link,
+// manager calls pushPacket to let link handles that packet.
 func (l *Link) pushPacket(p *Packet) {
 	switch p.CMD {
 	case PSH:
 		l.pushBytes(p.Payload)
 
 	case ACK:
+		// if ACK packet has error payload, it will be ignored.
 		if p.PayloadLength != 2 {
 			return
 		}
@@ -227,6 +236,10 @@ func (l *Link) Write(p []byte) (int, error) {
 	}
 }
 
+// Close close the link.
+// When the link read is closed by manager, Close will send FIN packet and then remove itself from manager.
+// When the link read is not closed, Close will send RST packet and then remove itself from manager.
+// When thi link is closed, Close do nothing.
 func (l *Link) Close() error {
 	l.readCtxLock.Lock()
 	l.writeCtxLock.Lock()
@@ -259,7 +272,6 @@ func (l *Link) Close() error {
 
 		default:
 			l.writeCtxCancelFunc()
-			// return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 			go l.manager.writePacket(newPacket(l.ID, FIN, nil))
 			return nil
 		}
@@ -274,12 +286,13 @@ func (l *Link) Close() error {
 
 		atomic.StoreInt32(&l.rst, 1)
 
-		// return l.manager.writePacket(newPacket(l.ID, RST, nil))
 		go l.manager.writePacket(newPacket(l.ID, RST, nil))
 		return nil
 	}
 }
 
+// errorClose when manager recv a RST packet about this link,
+// call errClose to close this link immediately and remove this link from manager.
 func (l *Link) errorClose() {
 	l.writeCtxLock.Lock()
 	l.readCtxLock.Lock()
@@ -304,7 +317,7 @@ func (l *Link) errorClose() {
 	l.releaseBuf()
 }
 
-// when recv FIN, link read should be closed
+// closeRead when recv FIN, link read should be closed.
 func (l *Link) closeRead() {
 	l.readCtxLock.Lock()
 	l.writeCtxLock.Lock()
@@ -331,6 +344,8 @@ func (l *Link) closeRead() {
 	}
 }
 
+// CloseWrite will close the link write and send FIN packet,
+// if link read is closed, link will be closed.
 func (l *Link) CloseWrite() error {
 	l.writeCtxLock.Lock()
 	l.readCtxLock.Lock()
@@ -385,10 +400,13 @@ func (l *Link) CloseWrite() error {
 	}
 }
 
+// managerClosed when manager is closed, call managerClosed to close link,
+// link will like recv a RST packet.
 func (l *Link) managerClosed() {
 	l.errorClose()
 }
 
+// releaseBuf release the link.Buf to the bufferPool.
 func (l *Link) releaseBuf() {
 	l.releaseBufOnce.Do(func() {
 		l.buf.Reset()

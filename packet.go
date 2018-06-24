@@ -26,15 +26,18 @@ const (
 
 type PacketHeader []byte
 
-func (h PacketHeader) Version() uint8 {
+// version get packetHeader version.
+func (h PacketHeader) version() uint8 {
 	return h[0]
 }
 
-func (h PacketHeader) ID() uint32 {
+// id get packetHeader id.
+func (h PacketHeader) id() uint32 {
 	return binary.BigEndian.Uint32(h[1:5])
 }
 
-func (h PacketHeader) PayloadLength() int {
+// payloadLength get packetHeader payload length.
+func (h PacketHeader) payloadLength() int {
 	return int(binary.BigEndian.Uint16(h[6:]))
 }
 
@@ -58,6 +61,8 @@ type Packet struct {
 	Payload       []byte
 }
 
+// newPacket create a new packet.
+// if cmd is FIN, RST, payload is nil.
 func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	packet := Packet{
 		Version: Version,
@@ -92,6 +97,7 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	return &packet
 }
 
+// split if len([]byte) > 65535, split the []byte ensure every []byte is <= 65535 in []*Packet.
 func split(id uint32, p []byte) []*Packet {
 	if len(p) <= 65536 {
 		return []*Packet{newPacket(id, PSH, p)}
@@ -107,7 +113,8 @@ func split(id uint32, p []byte) []*Packet {
 	return ps
 }
 
-func (p *Packet) Bytes() []byte {
+// bytes encode packet to []byte.
+func (p *Packet) bytes() []byte {
 	b := make([]byte, 1+4)
 	b[0] = p.Version
 	binary.BigEndian.PutUint32(b[1:], p.ID)
@@ -142,7 +149,8 @@ func (p *Packet) Bytes() []byte {
 	return b
 }
 
-func Decode(b []byte) (*Packet, error) {
+// decode decode a packet from []byte.
+func decode(b []byte) (*Packet, error) {
 	if len(b) < HeaderLength {
 		return nil, fmt.Errorf("not enough data, length %d", len(b))
 	}
