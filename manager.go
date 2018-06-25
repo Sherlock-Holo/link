@@ -246,7 +246,7 @@ func (m *Manager) readLoop() {
 			m.linksLock.Unlock()
 
 		case PING:
-			timeout := 3 * time.Duration(packet.Payload[0]) * time.Second
+			timeout := 2 * time.Duration(packet.Payload[0]) * time.Second
 			m.timeout = timeout
 
 			m.initTimer.Do(func() {
