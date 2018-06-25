@@ -157,11 +157,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 				// when link read closed or RST, other side doesn't care about the ack
 				// because it won't send any packets again
 			default:
-				go func() {
-					ack := make([]byte, 2)
-					binary.BigEndian.PutUint16(ack, uint16(n))
-					l.manager.writePacket(newPacket(l.ID, ACK, ack))
-				}()
+				go l.sendACK(n)
 			}
 
 			return
@@ -413,4 +409,34 @@ func (l *Link) releaseBuf() {
 		l.buf.Reset()
 		bufferPool.Put(&l.buf)
 	})
+}
+
+func (l *Link) sendACK(n int) {
+	if n <= 65535 {
+		ack := make([]byte, 2)
+		binary.BigEndian.PutUint16(ack, uint16(n))
+		l.manager.writePacket(newPacket(l.ID, ACK, ack))
+
+	} else {
+		var acks [][]byte
+		for {
+			ack := make([]byte, 2)
+			binary.BigEndian.PutUint16(ack, uint16(65535))
+			acks = append(acks, ack)
+
+			n -= 65535
+			if n <= 65535 {
+				lastAck := make([]byte, 2)
+				binary.BigEndian.PutUint16(ack, uint16(n))
+				acks = append(acks, lastAck)
+				break
+			}
+		}
+
+		for _, ack := range acks {
+			if err := l.manager.writePacket(newPacket(l.ID, ACK, ack)); err != nil {
+				return
+			}
+		}
+	}
 }
