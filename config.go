@@ -2,21 +2,20 @@ package link
 
 import "time"
 
+// Config manager config.
 type Config struct {
-	// Deprecated
-	WriteRequests     int
 	AcceptQueueSize   int
 	KeepaliveInterval time.Duration
 }
 
+// KeepaliveConfig DefaultConfig enable keepalive.
 var KeepaliveConfig = &Config{
-	WriteRequests:     1000,
 	AcceptQueueSize:   1000,
 	KeepaliveInterval: 15 * time.Second,
 }
 
+// DefaultConfig default config.
 var DefaultConfig = &Config{
-	WriteRequests:     1000,
 	AcceptQueueSize:   1000,
 	KeepaliveInterval: 0,
 }

@@ -16,6 +16,7 @@ type writeRequest struct {
 	written chan struct{} // if written, close this chan
 }
 
+// Manager manager will manage some links.
 type Manager struct {
 	conn io.ReadWriteCloser
 
@@ -306,6 +307,7 @@ func (m *Manager) Accept() (link *Link, err error) {
 	}
 }
 
+// IsClosed return if the manager closed or not.
 func (m *Manager) IsClosed() bool {
 	select {
 	case <-m.ctx.Done():

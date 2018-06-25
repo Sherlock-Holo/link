@@ -13,6 +13,7 @@ import (
 
 const writeWind = 768 * 1024
 
+// Link impalement io.ReadWriteCloser.
 type Link struct {
 	ID uint32
 
