@@ -252,9 +252,9 @@ func (l *Link) Close() error {
 	}
 
 	defer func() {
-		l.manager.linksLock.Lock()
+		// l.manager.linksLock.Lock()
 		l.manager.removeLink(l.ID)
-		l.manager.linksLock.Unlock()
+		// l.manager.linksLock.Unlock()
 
 		l.releaseBuf()
 	}()
@@ -311,9 +311,9 @@ func (l *Link) errorClose() {
 	l.readCtxCancelFunc()
 	l.writeCtxCancelFunc()
 
-	l.manager.linksLock.Lock()
+	// l.manager.linksLock.Lock()
 	l.manager.removeLink(l.ID)
-	l.manager.linksLock.Unlock()
+	// l.manager.linksLock.Unlock()
 
 	l.releaseBuf()
 }
@@ -334,9 +334,9 @@ func (l *Link) closeRead() {
 
 		select {
 		case <-l.writeCtx.Done():
-			l.manager.linksLock.Lock()
+			// l.manager.linksLock.Lock()
 			l.manager.removeLink(l.ID)
-			l.manager.linksLock.Unlock()
+			// l.manager.linksLock.Unlock()
 
 			l.releaseBuf()
 
@@ -386,9 +386,9 @@ func (l *Link) CloseWrite() error {
 
 		select {
 		case <-l.readCtx.Done():
-			l.manager.linksLock.Lock()
+			// l.manager.linksLock.Lock()
 			l.manager.removeLink(l.ID)
-			l.manager.linksLock.Unlock()
+			// l.manager.linksLock.Unlock()
 
 			l.releaseBuf()
 

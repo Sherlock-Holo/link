@@ -20,8 +20,9 @@ type writeRequest struct {
 type Manager struct {
 	conn io.ReadWriteCloser
 
-	links     map[uint32]*Link
-	linksLock sync.Mutex
+	/*links     map[uint32]*Link
+	linksLock sync.Mutex*/
+	links sync.Map
 
 	maxID   int32
 	usedIDs map[uint32]bool
@@ -50,7 +51,7 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	manager := &Manager{
 		conn: conn,
 
-		links: make(map[uint32]*Link),
+		// links: make(map[uint32]*Link),
 
 		maxID:   -1,
 		usedIDs: make(map[uint32]bool),
@@ -166,11 +167,15 @@ func (m *Manager) Close() error {
 		m.ctxCancelFunc()
 		m.ctxLock.Unlock()
 
-		m.linksLock.Lock()
+		/*m.linksLock.Lock()
 		for _, link := range m.links {
 			link.managerClosed()
 		}
-		m.linksLock.Unlock()
+		m.linksLock.Unlock()*/
+		m.links.Range(func(_, value interface{}) bool {
+			value.(*Link).managerClosed()
+			return true
+		})
 
 		if m.keepaliveTicker != nil {
 			m.keepaliveTicker.Stop()
@@ -190,7 +195,8 @@ func (m *Manager) Close() error {
 
 // removeLink recv FIN and send FIN will remove link.
 func (m *Manager) removeLink(id uint32) {
-	delete(m.links, id)
+	// delete(m.links, id)
+	m.links.Delete(id)
 }
 
 // readLoop read packet forever until manager is closed.
@@ -216,7 +222,7 @@ func (m *Manager) readLoop() {
 
 		switch packet.CMD {
 		case PSH:
-			m.linksLock.Lock()
+			/*m.linksLock.Lock()
 			if link, ok := m.links[packet.ID]; ok {
 				link.pushPacket(packet)
 
@@ -234,16 +240,34 @@ func (m *Manager) readLoop() {
 				}
 			}
 
-			m.linksLock.Unlock()
+			m.linksLock.Unlock()*/
+			if link, ok := m.links.Load(packet.ID); ok {
+				link.(*Link).pushPacket(packet)
+			} else {
+				// check id is used or not,
+				// make sure don't miss id and don't reopen a closed link.
+				if !(m.usedIDs[uint32(packet.ID)]) {
+					link := newLink(packet.ID, m)
+					m.usedIDs[uint32(packet.ID)] = true
+					m.links.Store(link.ID, link)
+
+					link.pushPacket(packet)
+
+					m.acceptQueue <- link
+				}
+			}
 
 		case ACK, FIN, RST:
-			m.linksLock.Lock()
+			/*m.linksLock.Lock()
 			if link, ok := m.links[packet.ID]; ok {
 				m.linksLock.Unlock()
 				link.pushPacket(packet)
 				continue // skip the following Unlock()
 			}
-			m.linksLock.Unlock()
+			m.linksLock.Unlock()*/
+			if link, ok := m.links.Load(packet.ID); ok {
+				link.(*Link).pushPacket(packet)
+			}
 
 		case PING:
 			timeout := 2 * time.Duration(packet.Payload[0]) * time.Second
@@ -290,9 +314,10 @@ func (m *Manager) NewLink() (link *Link, err error) {
 	case <-m.ctx.Done():
 		return nil, errors.New("manager closed")
 	default:
-		m.linksLock.Lock()
+		/*m.linksLock.Lock()
 		m.links[link.ID] = link
-		m.linksLock.Unlock()
+		m.linksLock.Unlock()*/
+		m.links.Store(link.ID, link)
 		return link, nil
 	}
 }
