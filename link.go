@@ -2,7 +2,6 @@ package link
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -17,13 +16,8 @@ const writeWind = 768 * 1024
 type Link struct {
 	ID uint32
 
-	readCtx           context.Context    // readCtx.Done() can recv means link read is closed
-	readCtxCancelFunc context.CancelFunc // close the link read
-	readCtxLock       sync.Mutex         // ensure link read close one time
-
-	writeCtx           context.Context    // writeCtx.Done() can recv means link write is closed
-	writeCtxCancelFunc context.CancelFunc // close the link write
-	writeCtxLock       sync.Mutex         // ensure link write close one time
+	readCtx  chan struct{} // readCtx can recv means link read is closed
+	writeCtx chan struct{} // writeCtx can recv means link write is closed
 
 	manager *Manager
 
@@ -43,17 +37,11 @@ type Link struct {
 // newLink will create a Link, but the Link isn't created at other side,
 // user should write some data to let other side create the link.
 func newLink(id uint32, m *Manager) *Link {
-	rctx, rcancelFunc := context.WithCancel(context.Background())
-	wctx, wcancelFunc := context.WithCancel(context.Background())
-
 	link := &Link{
 		ID: id,
 
-		readCtx:           rctx,
-		readCtxCancelFunc: rcancelFunc,
-
-		writeCtx:           wctx,
-		writeCtxCancelFunc: wcancelFunc,
+		readCtx:  make(chan struct{}),
+		writeCtx: make(chan struct{}),
 
 		manager: m,
 
@@ -124,7 +112,7 @@ func (l *Link) pushPacket(p *Packet) {
 func (l *Link) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		select {
-		case <-l.readCtx.Done():
+		case <-l.readCtx:
 			if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 				return 0, net.OpError{
 					Net: "link",
@@ -153,7 +141,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 			atomic.AddInt32(&l.bufSize, -int32(n))
 
 			select {
-			case <-l.readCtx.Done():
+			case <-l.readCtx:
 				// when link read closed or RST, other side doesn't care about the ack
 				// because it won't send any packets again
 			default:
@@ -164,7 +152,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 		}
 
 		select {
-		case <-l.readCtx.Done():
+		case <-l.readCtx:
 			if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 				return 0, net.OpError{
 					Net: "link",
@@ -186,7 +174,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 func (l *Link) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		select {
-		case <-l.writeCtx.Done():
+		case <-l.writeCtx:
 			return 0, io.ErrClosedPipe
 		default:
 			return 0, nil
@@ -195,7 +183,7 @@ func (l *Link) Write(p []byte) (int, error) {
 
 	if len(p) <= 65535 {
 		select {
-		case <-l.writeCtx.Done():
+		case <-l.writeCtx:
 			return 0, io.ErrClosedPipe
 
 		case <-l.writeEvent:
@@ -214,7 +202,7 @@ func (l *Link) Write(p []byte) (int, error) {
 		packets := split(l.ID, p)
 		for _, packet := range packets {
 			select {
-			case <-l.writeCtx.Done():
+			case <-l.writeCtx:
 				return 0, io.ErrClosedPipe
 
 			case <-l.writeEvent:
@@ -236,11 +224,6 @@ func (l *Link) Write(p []byte) (int, error) {
 // When the link read is not closed, Close will send RST packet and then remove itself from manager.
 // When thi link is closed, Close do nothing.
 func (l *Link) Close() error {
-	l.readCtxLock.Lock()
-	l.writeCtxLock.Lock()
-	defer l.readCtxLock.Unlock()
-	defer l.writeCtxLock.Unlock()
-
 	if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 		return nil
 	}
@@ -258,23 +241,23 @@ func (l *Link) Close() error {
 	}
 
 	select {
-	case <-l.readCtx.Done():
+	case <-l.readCtx:
 		select {
-		case <-l.writeCtx.Done():
+		case <-l.writeCtx:
 			return nil
 
 		default:
-			l.writeCtxCancelFunc()
+			close(l.writeCtx)
 			go l.manager.writePacket(newPacket(l.ID, FIN, nil))
 			return nil
 		}
 	default:
 		// ensure when other side is waiting for writing cancel the write
-		l.readCtxCancelFunc()
+		close(l.readCtx)
 		select {
-		case <-l.writeCtx.Done():
+		case <-l.writeCtx:
 		default:
-			l.writeCtxCancelFunc()
+			close(l.writeCtx)
 		}
 
 		atomic.StoreInt32(&l.rst, 1)
@@ -287,11 +270,6 @@ func (l *Link) Close() error {
 // errorClose when manager recv a RST packet about this link,
 // call errClose to close this link immediately and remove this link from manager.
 func (l *Link) errorClose() {
-	l.writeCtxLock.Lock()
-	l.readCtxLock.Lock()
-	defer l.writeCtxLock.Unlock()
-	defer l.readCtxLock.Unlock()
-
 	atomic.StoreInt32(&l.rst, 1)
 
 	// dry writeEvent
@@ -300,8 +278,17 @@ func (l *Link) errorClose() {
 	default:
 	}
 
-	l.readCtxCancelFunc()
-	l.writeCtxCancelFunc()
+	select {
+	case <-l.readCtx:
+	default:
+		close(l.readCtx)
+	}
+
+	select {
+	case <-l.writeCtx:
+	default:
+		close(l.writeCtx)
+	}
 
 	l.manager.removeLink(l.ID)
 
@@ -310,20 +297,14 @@ func (l *Link) errorClose() {
 
 // closeRead when recv FIN, link read should be closed.
 func (l *Link) closeRead() {
-	l.readCtxLock.Lock()
-	l.writeCtxLock.Lock()
-	defer l.readCtxLock.Unlock()
-	defer l.writeCtxLock.Unlock()
-
 	select {
 	// link read closed but haven't call closeRead, means Close() or errClose() called.
-	case <-l.readCtx.Done():
-
+	case <-l.readCtx:
 	default:
-		l.readCtxCancelFunc()
+		close(l.readCtx)
 
 		select {
-		case <-l.writeCtx.Done():
+		case <-l.writeCtx:
 			l.manager.removeLink(l.ID)
 
 			l.releaseBuf()
@@ -336,11 +317,6 @@ func (l *Link) closeRead() {
 // CloseWrite will close the link write and send FIN packet,
 // if link read is closed, link will be closed.
 func (l *Link) CloseWrite() error {
-	l.writeCtxLock.Lock()
-	l.readCtxLock.Lock()
-	defer l.writeCtxLock.Unlock()
-	defer l.readCtxLock.Unlock()
-
 	if atomic.CompareAndSwapInt32(&l.rst, 1, 1) {
 		return nil
 	}
@@ -352,9 +328,9 @@ func (l *Link) CloseWrite() error {
 	}
 
 	select {
-	case <-l.writeCtx.Done():
+	case <-l.writeCtx:
 		select {
-		case <-l.readCtx.Done():
+		case <-l.readCtx:
 			return net.OpError{
 				Net: "link",
 				Op:  "CloseWrite",
@@ -370,10 +346,10 @@ func (l *Link) CloseWrite() error {
 		}
 
 	default:
-		l.writeCtxCancelFunc()
+		close(l.writeCtx)
 
 		select {
-		case <-l.readCtx.Done():
+		case <-l.readCtx:
 			l.manager.removeLink(l.ID)
 
 			l.releaseBuf()
