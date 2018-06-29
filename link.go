@@ -254,6 +254,7 @@ func (l *Link) Close() error {
 	default:
 		// ensure when other side is waiting for writing cancel the write
 		close(l.readCtx)
+
 		select {
 		case <-l.writeCtx:
 		default:
