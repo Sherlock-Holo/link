@@ -1,7 +1,6 @@
 package link
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -25,9 +24,7 @@ type Manager struct {
 	maxID   int32
 	usedIDs map[uint32]bool
 
-	ctx           context.Context    // ctx.Done() can recv means manager is closed
-	ctxCancelFunc context.CancelFunc // close the manager
-	ctxLock       sync.Mutex         // ensure manager close one time
+	ctx chan struct{} // ctx can recv means manager is closed
 
 	writes chan writeRequest // write chan limit link don't write too qiuckly
 
@@ -44,16 +41,13 @@ type Manager struct {
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
 func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
-	ctx, cancelFunc := context.WithCancel(context.Background())
-
 	manager := &Manager{
 		conn: conn,
 
 		maxID:   -1,
 		usedIDs: make(map[uint32]bool),
 
-		ctx:           ctx,
-		ctxCancelFunc: cancelFunc,
+		ctx: make(chan struct{}),
 
 		writes: make(chan writeRequest, 1),
 	}
@@ -62,7 +56,6 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 		config = DefaultConfig
 	}
 
-	// manager.writes = make(chan writeRequest, config.WriteRequests)
 	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
 
 	if config.KeepaliveInterval > 0 {
@@ -77,14 +70,18 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	go manager.writeLoop()
 
 	// debug
-	/*go func() {
+	go func() {
 		for {
 			time.Sleep(2 * time.Second)
-			manager.linksLock.Lock()
-			fmt.Println("links size", len(manager.links), manager.links)
-			manager.linksLock.Unlock()
+			var count int
+			manager.links.Range(func(_, _ interface{}) bool {
+				count++
+				return true
+			})
+
+			fmt.Println("links size", count)
 		}
-	}()*/
+	}()
 
 	return manager
 }
@@ -138,13 +135,13 @@ func (m *Manager) writePacket(p *Packet) error {
 	}
 
 	select {
-	case <-m.ctx.Done():
+	case <-m.ctx:
 		return io.ErrClosedPipe
 	case m.writes <- req:
 	}
 
 	select {
-	case <-m.ctx.Done():
+	case <-m.ctx:
 		return io.ErrClosedPipe
 	case <-req.written:
 		return nil
@@ -153,15 +150,11 @@ func (m *Manager) writePacket(p *Packet) error {
 
 // Close close the manager and close all links belong to this manager.
 func (m *Manager) Close() error {
-	m.ctxLock.Lock()
-
 	select {
-	case <-m.ctx.Done():
-		m.ctxLock.Unlock()
+	case <-m.ctx:
 		return nil
 	default:
-		m.ctxCancelFunc()
-		m.ctxLock.Unlock()
+		close(m.ctx)
 
 		m.links.Range(func(_, value interface{}) bool {
 			value.(*Link).managerClosed()
@@ -193,7 +186,7 @@ func (m *Manager) removeLink(id uint32) {
 func (m *Manager) readLoop() {
 	for {
 		select {
-		case <-m.ctx.Done():
+		case <-m.ctx:
 			return
 		default:
 		}
@@ -256,7 +249,7 @@ func (m *Manager) readLoop() {
 func (m *Manager) writeLoop() {
 	for {
 		select {
-		case <-m.ctx.Done():
+		case <-m.ctx:
 			return
 		case req := <-m.writes:
 			_, err := m.conn.Write(req.packet.bytes())
@@ -275,7 +268,7 @@ func (m *Manager) NewLink() (link *Link, err error) {
 	link = newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
 
 	select {
-	case <-m.ctx.Done():
+	case <-m.ctx:
 		return nil, errors.New("manager closed")
 	default:
 		m.links.Store(link.ID, link)
@@ -286,7 +279,7 @@ func (m *Manager) NewLink() (link *Link, err error) {
 // Accept accept a new Link, if manager is closed, err != nil.
 func (m *Manager) Accept() (link *Link, err error) {
 	select {
-	case <-m.ctx.Done():
+	case <-m.ctx:
 		return nil, errors.New("broken manager")
 	case link = <-m.acceptQueue:
 		return link, nil
@@ -296,7 +289,7 @@ func (m *Manager) Accept() (link *Link, err error) {
 // IsClosed return if the manager closed or not.
 func (m *Manager) IsClosed() bool {
 	select {
-	case <-m.ctx.Done():
+	case <-m.ctx:
 		return true
 	default:
 		return false
