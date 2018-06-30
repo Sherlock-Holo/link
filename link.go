@@ -358,7 +358,6 @@ func (l *Link) CloseWrite() error {
 		default:
 		}
 
-		// return l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		return nil
 	}
@@ -378,6 +377,7 @@ func (l *Link) releaseBuf() {
 	})
 }
 
+// sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
 func (l *Link) sendACK(n int) {
 	if n <= 65535 {
 		ack := make([]byte, 2)
