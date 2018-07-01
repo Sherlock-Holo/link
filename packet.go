@@ -114,9 +114,16 @@ func split(id uint32, p []byte) []*Packet {
 
 // bytes encode packet to []byte.
 func (p *Packet) bytes() []byte {
-	b := make([]byte, 1+4)
+	var b []byte
+
+	if p.Payload != nil {
+		b = make([]byte, 1+4+1+2, 1+4+1+2+len(p.Payload))
+	} else {
+		b = make([]byte, 1+4+1+2)
+	}
+
 	b[0] = p.Version
-	binary.BigEndian.PutUint32(b[1:], p.ID)
+	binary.BigEndian.PutUint32(b[1:5], p.ID)
 
 	var cmdByte uint8
 
@@ -137,13 +144,13 @@ func (p *Packet) bytes() []byte {
 		cmdByte |= 1 << 3
 	}
 
-	b = append(b, cmdByte)
+	b[5] = cmdByte
 
-	length := make([]byte, 2)
-	binary.BigEndian.PutUint16(length, p.PayloadLength)
-	b = append(b, length...)
+	binary.BigEndian.PutUint16(b[6:], p.PayloadLength)
 
-	b = append(b, p.Payload...)
+	if p.Payload != nil {
+		b = append(b, p.Payload...)
+	}
 
 	return b
 }
