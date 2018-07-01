@@ -26,7 +26,7 @@ type Manager struct {
 
 	ctx chan struct{} // ctx can recv means manager is closed
 
-	writes chan writeRequest // write chan limit link don't write too qiuckly
+	writes chan writeRequest // write chan limit link don't write too quickly
 
 	acceptQueue chan *Link // accept queue, call Accept() will get a waiting link
 
