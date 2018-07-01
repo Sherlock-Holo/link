@@ -19,7 +19,8 @@ type writeRequest struct {
 type Manager struct {
 	conn io.ReadWriteCloser
 
-	links sync.Map
+	// links sync.Map
+	links cowMap
 
 	maxID   int32
 	usedIDs map[uint32]bool
@@ -41,8 +42,13 @@ type Manager struct {
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
 func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
+	cm := cowMap{}
+	cm.m.Store(make(map[uint32]*Link))
+
 	manager := &Manager{
 		conn: conn,
+
+		links: cm,
 
 		maxID:   -1,
 		usedIDs: make(map[uint32]bool),
@@ -156,9 +162,12 @@ func (m *Manager) Close() error {
 	default:
 		close(m.ctx)
 
-		m.links.Range(func(_, value interface{}) bool {
+		/*m.links.Range(func(_, value interface{}) bool {
 			value.(*Link).managerClosed()
 			return true
+		})*/
+		m.links.Range(func(_ uint32, link *Link) {
+			link.managerClosed()
 		})
 
 		if m.keepaliveTicker != nil {
@@ -205,7 +214,7 @@ func (m *Manager) readLoop() {
 
 		switch packet.CMD {
 		case PSH:
-			if link, ok := m.links.Load(packet.ID); ok {
+			/*if link, ok := m.links.Load(packet.ID); ok {
 				link.(*Link).pushPacket(packet)
 			} else {
 				// check id is used or not,
@@ -219,11 +228,26 @@ func (m *Manager) readLoop() {
 
 					m.acceptQueue <- link
 				}
+			}*/
+			if link, ok := m.links.Get(packet.ID); ok {
+				link.pushPacket(packet)
+			} else {
+				// check id is used or not,
+				// make sure don't miss id and don't reopen a closed link.
+				if !(m.usedIDs[uint32(packet.ID)]) {
+					link := newLink(packet.ID, m)
+					m.usedIDs[uint32(packet.ID)] = true
+					m.links.Set(link.ID, link)
+
+					link.pushPacket(packet)
+
+					m.acceptQueue <- link
+				}
 			}
 
 		case ACK, FIN, RST:
-			if link, ok := m.links.Load(packet.ID); ok {
-				link.(*Link).pushPacket(packet)
+			if link, ok := m.links.Get(packet.ID); ok {
+				link.pushPacket(packet)
 			}
 
 		case PING:
@@ -271,7 +295,7 @@ func (m *Manager) NewLink() (link *Link, err error) {
 	case <-m.ctx:
 		return nil, errors.New("manager closed")
 	default:
-		m.links.Store(link.ID, link)
+		m.links.Set(link.ID, link)
 		return link, nil
 	}
 }
