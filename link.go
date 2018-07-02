@@ -45,7 +45,7 @@ func newLink(id uint32, m *Manager) *Link {
 
 		manager: m,
 
-		buf: *bufferPool.Get().(*bytes.Buffer),
+		buf: *m.bufferPool.Get().(*bytes.Buffer),
 
 		readEvent: make(chan struct{}, 1),
 
@@ -373,7 +373,7 @@ func (l *Link) managerClosed() {
 func (l *Link) releaseBuf() {
 	l.releaseBufOnce.Do(func() {
 		l.buf.Reset()
-		bufferPool.Put(&l.buf)
+		l.manager.bufferPool.Put(&l.buf)
 	})
 }
 
