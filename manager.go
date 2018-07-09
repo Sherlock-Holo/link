@@ -25,7 +25,8 @@ type Manager struct {
 	maxID   int32
 	usedIDs map[uint32]bool
 
-	ctx chan struct{} // ctx can recv means manager is closed
+	ctx       chan struct{} // ctx can recv means manager is closed
+	closeOnce sync.Once
 
 	writes chan writeRequest // write chan limit link don't write too quickly
 
@@ -158,11 +159,8 @@ func (m *Manager) writePacket(p *Packet) error {
 }
 
 // Close close the manager and close all links belong to this manager.
-func (m *Manager) Close() error {
-	select {
-	case <-m.ctx:
-		return nil
-	default:
+func (m *Manager) Close() (err error) {
+	m.closeOnce.Do(func() {
 		close(m.ctx)
 
 		m.links.Range(func(_, value interface{}) bool {
@@ -182,8 +180,10 @@ func (m *Manager) Close() error {
 			m.timeoutTimer.Stop()
 		}
 
-		return m.conn.Close()
-	}
+		err = m.conn.Close()
+	})
+
+	return
 }
 
 // removeLink recv FIN and send FIN will remove link.

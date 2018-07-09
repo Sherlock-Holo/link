@@ -16,8 +16,14 @@ const writeWind = 768 * 1024
 type Link struct {
 	ID uint32
 
-	readCtx  chan struct{} // readCtx can recv means link read is closed
-	writeCtx chan struct{} // writeCtx can recv means link write is closed
+	// use atomic instead of sync.Once to close read, write.
+	// if use sync.Once, when closing read and closing write at the same time,
+	// and they found write/read should be closed too, they will call once.Do(),
+	// it will cause a dead lock because sync.Once use mutex.
+	readCtx     chan struct{} // readCtx can recv means link read is closed
+	writeCtx    chan struct{} // writeCtx can recv means link write is closed
+	readClosed  uint32        // ensure close read once
+	writeClosed uint32        // ensure close write once
 
 	manager *Manager
 
@@ -240,7 +246,7 @@ func (l *Link) Close() error {
 	default:
 	}
 
-	select {
+	/*select {
 	case <-l.readCtx:
 		select {
 		case <-l.writeCtx:
@@ -265,7 +271,30 @@ func (l *Link) Close() error {
 
 		go l.manager.writePacket(newPacket(l.ID, RST, nil))
 		return nil
+	}*/
+	// if true, means read is not closed, read will be closed
+	if atomic.CompareAndSwapUint32(&l.readClosed, 0, 1) {
+		close(l.readCtx)
+
+		if atomic.CompareAndSwapUint32(&l.writeClosed, 0, 1) {
+			close(l.writeCtx)
+		}
+
+		go l.manager.writePacket(newPacket(l.ID, RST, nil))
+
+		return nil
 	}
+
+	// read is closed
+	// if true, means write is not closed, write will be closed
+	if atomic.CompareAndSwapUint32(&l.writeClosed, 0, 1) {
+		close(l.writeCtx)
+		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
+		return nil
+	}
+
+	// read write are closed
+	return nil
 }
 
 // errorClose when manager recv a RST packet about this link,
@@ -279,15 +308,21 @@ func (l *Link) errorClose() {
 	default:
 	}
 
-	select {
+	/*select {
 	case <-l.readCtx:
 	default:
 		close(l.readCtx)
+	}*/
+	if atomic.CompareAndSwapUint32(&l.readClosed, 0, 1) {
+		close(l.readCtx)
 	}
 
-	select {
+	/*select {
 	case <-l.writeCtx:
 	default:
+		close(l.writeCtx)
+	}*/
+	if atomic.CompareAndSwapUint32(&l.writeClosed, 0, 1) {
 		close(l.writeCtx)
 	}
 
@@ -298,7 +333,7 @@ func (l *Link) errorClose() {
 
 // closeRead when recv FIN, link read should be closed.
 func (l *Link) closeRead() {
-	select {
+	/*select {
 	// link read closed but haven't call closeRead, means Close() or errClose() called.
 	case <-l.readCtx:
 	default:
@@ -311,6 +346,19 @@ func (l *Link) closeRead() {
 			l.releaseBuf()
 
 		default:
+		}
+	}*/
+
+	// if true, means read is not closed, read will be closed
+	// if false, read closed but haven't call closeRead, means Close() or errClose() called
+	if atomic.CompareAndSwapUint32(&l.readClosed, 0, 1) {
+		close(l.readCtx)
+
+		// if true, means write is closed
+		if atomic.CompareAndSwapUint32(&l.writeClosed, 1, 1) {
+			l.manager.removeLink(l.ID)
+
+			l.releaseBuf()
 		}
 	}
 }
@@ -328,7 +376,7 @@ func (l *Link) CloseWrite() error {
 	default:
 	}
 
-	select {
+	/*select {
 	case <-l.writeCtx:
 		select {
 		case <-l.readCtx:
@@ -360,7 +408,38 @@ func (l *Link) CloseWrite() error {
 
 		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
 		return nil
+	}*/
+
+	// if true, means write is not closed, write will be closed
+	if atomic.CompareAndSwapUint32(&l.writeClosed, 0, 1) {
+		close(l.writeCtx)
+
+		// if true, means read is closed
+		if atomic.CompareAndSwapUint32(&l.readClosed, 1, 1) {
+			l.manager.removeLink(l.ID)
+
+			l.releaseBuf()
+		}
+
+		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
+		return nil
 	}
+
+	// write is closed
+	// if true, means read is closed
+	if atomic.CompareAndSwapUint32(&l.readClosed, 1, 1) {
+		return net.OpError{
+			Net: "link",
+			Op:  "CloseWrite",
+			Err: errors.New("close write on a closed link"),
+		}.Err
+	}
+
+	return net.OpError{
+		Net: "link",
+		Op:  "CloseWrite",
+		Err: errors.New("close write on a write closed link"),
+	}.Err
 }
 
 // managerClosed when manager is closed, call managerClosed to close link,
