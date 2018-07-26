@@ -27,11 +27,10 @@ type Link struct {
 
 	manager *Manager
 
-	buf            *bytes.Buffer
-	bufSize        int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
-	bufLock        sync.Mutex
-	readEvent      chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call readEventNotify
-	releaseBufOnce sync.Once
+	buf       *bytes.Buffer
+	bufSize   int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
+	bufLock   sync.Mutex
+	readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call readEventNotify
 
 	// when writeWind < 0, Link.Write will be blocked
 	writeWind  int32
