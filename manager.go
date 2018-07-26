@@ -1,7 +1,6 @@
 package link
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -39,8 +38,6 @@ type Manager struct {
 	initTimer    sync.Once // make sure Timer init once
 
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
-
-	bufferPool sync.Pool
 }
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
@@ -55,11 +52,11 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 
 		writes: make(chan writeRequest, 1),
 
-		bufferPool: sync.Pool{
+		/*bufferPool: sync.Pool{
 			New: func() interface{} {
 				return bytes.NewBuffer(make([]byte, 0, config.BufferSize))
 			},
-		},
+		},*/
 	}
 
 	if config == nil {

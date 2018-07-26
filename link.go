@@ -27,7 +27,7 @@ type Link struct {
 
 	manager *Manager
 
-	buf            bytes.Buffer
+	buf            *bytes.Buffer
 	bufSize        int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
 	bufLock        sync.Mutex
 	readEvent      chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call readEventNotify
@@ -51,7 +51,7 @@ func newLink(id uint32, m *Manager) *Link {
 
 		manager: m,
 
-		buf: *m.bufferPool.Get().(*bytes.Buffer),
+		buf: bytes.NewBuffer(make([]byte, 0, 1024*16)),
 
 		readEvent: make(chan struct{}, 1),
 
@@ -236,8 +236,6 @@ func (l *Link) Close() error {
 
 	defer func() {
 		l.manager.removeLink(l.ID)
-
-		l.releaseBuf()
 	}()
 
 	// dry writeEvent
@@ -246,32 +244,6 @@ func (l *Link) Close() error {
 	default:
 	}
 
-	/*select {
-	case <-l.readCtx:
-		select {
-		case <-l.writeCtx:
-			return nil
-
-		default:
-			close(l.writeCtx)
-			go l.manager.writePacket(newPacket(l.ID, FIN, nil))
-			return nil
-		}
-	default:
-		// ensure when other side is waiting for writing cancel the write
-		close(l.readCtx)
-
-		select {
-		case <-l.writeCtx:
-		default:
-			close(l.writeCtx)
-		}
-
-		atomic.StoreInt32(&l.rst, 1)
-
-		go l.manager.writePacket(newPacket(l.ID, RST, nil))
-		return nil
-	}*/
 	// if true, means read is not closed, read will be closed
 	if atomic.CompareAndSwapUint32(&l.readClosed, 0, 1) {
 		close(l.readCtx)
@@ -308,47 +280,19 @@ func (l *Link) errorClose() {
 	default:
 	}
 
-	/*select {
-	case <-l.readCtx:
-	default:
-		close(l.readCtx)
-	}*/
 	if atomic.CompareAndSwapUint32(&l.readClosed, 0, 1) {
 		close(l.readCtx)
 	}
 
-	/*select {
-	case <-l.writeCtx:
-	default:
-		close(l.writeCtx)
-	}*/
 	if atomic.CompareAndSwapUint32(&l.writeClosed, 0, 1) {
 		close(l.writeCtx)
 	}
 
 	l.manager.removeLink(l.ID)
-
-	l.releaseBuf()
 }
 
 // closeRead when recv FIN, link read should be closed.
 func (l *Link) closeRead() {
-	/*select {
-	// link read closed but haven't call closeRead, means Close() or errClose() called.
-	case <-l.readCtx:
-	default:
-		close(l.readCtx)
-
-		select {
-		case <-l.writeCtx:
-			l.manager.removeLink(l.ID)
-
-			l.releaseBuf()
-
-		default:
-		}
-	}*/
-
 	// if true, means read is not closed, read will be closed
 	// if false, read closed but haven't call closeRead, means Close() or errClose() called
 	if atomic.CompareAndSwapUint32(&l.readClosed, 0, 1) {
@@ -357,8 +301,6 @@ func (l *Link) closeRead() {
 		// if true, means write is closed
 		if atomic.CompareAndSwapUint32(&l.writeClosed, 1, 1) {
 			l.manager.removeLink(l.ID)
-
-			l.releaseBuf()
 		}
 	}
 }
@@ -376,40 +318,6 @@ func (l *Link) CloseWrite() error {
 	default:
 	}
 
-	/*select {
-	case <-l.writeCtx:
-		select {
-		case <-l.readCtx:
-			return net.OpError{
-				Net: "link",
-				Op:  "CloseWrite",
-				Err: errors.New("close write on a closed link"),
-			}.Err
-
-		default:
-			return net.OpError{
-				Net: "link",
-				Op:  "CloseWrite",
-				Err: errors.New("close write on a write closed link"),
-			}.Err
-		}
-
-	default:
-		close(l.writeCtx)
-
-		select {
-		case <-l.readCtx:
-			l.manager.removeLink(l.ID)
-
-			l.releaseBuf()
-
-		default:
-		}
-
-		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
-		return nil
-	}*/
-
 	// if true, means write is not closed, write will be closed
 	if atomic.CompareAndSwapUint32(&l.writeClosed, 0, 1) {
 		close(l.writeCtx)
@@ -417,8 +325,6 @@ func (l *Link) CloseWrite() error {
 		// if true, means read is closed
 		if atomic.CompareAndSwapUint32(&l.readClosed, 1, 1) {
 			l.manager.removeLink(l.ID)
-
-			l.releaseBuf()
 		}
 
 		go l.manager.writePacket(newPacket(l.ID, FIN, nil))
@@ -446,14 +352,6 @@ func (l *Link) CloseWrite() error {
 // link will like recv a RST packet.
 func (l *Link) managerClosed() {
 	l.errorClose()
-}
-
-// releaseBuf release the link.Buf to the bufferPool.
-func (l *Link) releaseBuf() {
-	l.releaseBufOnce.Do(func() {
-		l.buf.Reset()
-		l.manager.bufferPool.Put(&l.buf)
-	})
 }
 
 // sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
