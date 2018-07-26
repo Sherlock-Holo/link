@@ -51,12 +51,6 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 		ctx: make(chan struct{}),
 
 		writes: make(chan writeRequest, 1),
-
-		/*bufferPool: sync.Pool{
-			New: func() interface{} {
-				return bytes.NewBuffer(make([]byte, 0, config.BufferSize))
-			},
-		},*/
 	}
 
 	if config == nil {
