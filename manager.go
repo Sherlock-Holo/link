@@ -25,7 +25,7 @@ type Manager struct {
 	usedIDs map[uint32]bool
 
 	ctx       chan struct{} // ctx can recv means manager is closed
-	closeOnce sync.Once
+	closeOnce int32
 
 	writes chan writeRequest // write chan limit link don't write too quickly
 
@@ -33,9 +33,9 @@ type Manager struct {
 
 	interval time.Duration // keepalive interval
 
-	timeoutTimer *time.Timer // timer check if the manager is timeout
-	timeout      time.Duration
-	initTimer    sync.Once // make sure Timer init once
+	timeoutTimer  *time.Timer // timer check if the manager is timeout
+	timeout       time.Duration
+	initTimerOnce int32 // make sure Timer init once
 
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
 }
@@ -151,7 +151,7 @@ func (m *Manager) writePacket(p *Packet) error {
 
 // Close close the manager and close all links belong to this manager.
 func (m *Manager) Close() (err error) {
-	m.closeOnce.Do(func() {
+	if atomic.CompareAndSwapInt32(&m.closeOnce, 0, 1) {
 		close(m.ctx)
 
 		m.links.Range(func(_, value interface{}) bool {
@@ -172,7 +172,7 @@ func (m *Manager) Close() (err error) {
 		}
 
 		err = m.conn.Close()
-	})
+	}
 
 	return
 }
@@ -230,14 +230,14 @@ func (m *Manager) readLoop() {
 			timeout := 2 * time.Duration(packet.Payload[0]) * time.Second
 			m.timeout = timeout
 
-			m.initTimer.Do(func() {
+			if atomic.CompareAndSwapInt32(&m.initTimerOnce, 0, 1) {
 				m.timeoutTimer = time.AfterFunc(timeout, func() {
 					log.Println("manager timeout")
 					m.Close()
 				})
 
 				log.Println("init manager timer")
-			})
+			}
 
 			m.timeoutTimer.Stop()
 			m.timeoutTimer.Reset(timeout)
