@@ -252,13 +252,19 @@ func (m *Manager) writeLoop() {
 		case <-m.ctx:
 			return
 		case req := <-m.writes:
-			_, err := m.conn.Write(req.packet.bytes())
-			if err != nil {
+			bytes := req.packet.bytes()
+			if _, err := m.conn.Write(bytes); err != nil {
 				log.Println("manager writeLoop:", err)
 				m.Close()
+
+				releaseBytes(bytes)
+
 				return
 			}
+
 			close(req.written)
+
+			releaseBytes(bytes)
 		}
 	}
 }

@@ -3,10 +3,25 @@ package link
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 type VersionErr struct {
 	Version uint8
+}
+
+var bytesPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, HeaderLength)
+	},
+}
+
+func getBytes() []byte {
+	return bytesPool.Get().([]byte)
+}
+
+func releaseBytes(b []byte) {
+	bytesPool.Put(b[:HeaderLength])
 }
 
 func (e VersionErr) Error() string {
@@ -114,13 +129,14 @@ func split(id uint32, p []byte) []*Packet {
 
 // bytes encode packet to []byte.
 func (p *Packet) bytes() []byte {
-	var b []byte
+	/*var b []byte
 
 	if p.Payload != nil {
-		b = make([]byte, 1+4+1+2, 1+4+1+2+len(p.Payload))
+		b = make([]byte, HeaderLength, 1+4+1+2+len(p.Payload))
 	} else {
-		b = make([]byte, 1+4+1+2)
-	}
+		b = make([]byte, HeaderLength)
+	}*/
+	b := getBytes()
 
 	b[0] = p.Version
 	binary.BigEndian.PutUint32(b[1:5], p.ID)
