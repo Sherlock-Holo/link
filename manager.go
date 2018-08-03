@@ -114,8 +114,7 @@ func (m *Manager) readPacket() (*Packet, error) {
 	var payload []byte
 
 	if length := header.payloadLength(); length != 0 {
-		// payload = make([]byte, length)
-		payload = getBytes(length)
+		payload = make([]byte, length)
 		if _, err := io.ReadFull(m.conn, payload); err != nil {
 			return nil, fmt.Errorf("manager read packet payload: %s", err)
 		}
