@@ -257,6 +257,7 @@ func (m *Manager) writeLoop() {
 				log.Println("manager writeLoop:", err)
 				m.Close()
 
+				// release bytes slice to pool
 				releaseBytes(bytes)
 
 				return
@@ -264,6 +265,7 @@ func (m *Manager) writeLoop() {
 
 			close(req.written)
 
+			// release bytes slice to pool
 			releaseBytes(bytes)
 		}
 	}

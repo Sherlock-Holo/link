@@ -10,6 +10,7 @@ type VersionErr struct {
 	Version uint8
 }
 
+// release bytes slice to pool
 var bytesPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, HeaderLength)
@@ -129,13 +130,7 @@ func split(id uint32, p []byte) []*Packet {
 
 // bytes encode packet to []byte.
 func (p *Packet) bytes() []byte {
-	/*var b []byte
-
-	if p.Payload != nil {
-		b = make([]byte, HeaderLength, 1+4+1+2+len(p.Payload))
-	} else {
-		b = make([]byte, HeaderLength)
-	}*/
+	// reduce slice make
 	b := getBytes()
 
 	b[0] = p.Version
