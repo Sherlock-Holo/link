@@ -356,20 +356,23 @@ func (l *Link) managerClosed() {
 // sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
 func (l *Link) sendACK(n int) {
 	if n <= 65535 {
-		ack := make([]byte, 2)
+		// ack := make([]byte, 2)
+		ack := getBytes(2)
 		binary.BigEndian.PutUint16(ack, uint16(n))
 		l.manager.writePacket(newPacket(l.ID, ACK, ack))
 
 	} else {
 		var acks [][]byte
 		for {
-			ack := make([]byte, 2)
+			// ack := make([]byte, 2)
+			ack := getBytes(2)
 			binary.BigEndian.PutUint16(ack, uint16(65535))
 			acks = append(acks, ack)
 
 			n -= 65535
 			if n <= 65535 {
-				lastAck := make([]byte, 2)
+				// lastAck := make([]byte, 2)
+				lastAck := getBytes(2)
 				binary.BigEndian.PutUint16(ack, uint16(n))
 				acks = append(acks, lastAck)
 				break
