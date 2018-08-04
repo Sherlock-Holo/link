@@ -272,7 +272,21 @@ func (m *Manager) writeLoop() {
 }
 
 // NewLink create a Link, if manager is closed, err != nil.
+// recommend to use Dial because NewLink will be deprecated in the future.
 func (m *Manager) NewLink() (link *Link, err error) {
+	link = newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
+
+	select {
+	case <-m.ctx:
+		return nil, errors.New("manager closed")
+	default:
+		m.links.Store(link.ID, link)
+		return link, nil
+	}
+}
+
+// Dial create a Link, if manager is closed, err != nil.
+func (m *Manager) Dial() (link *Link, err error) {
 	link = newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
 
 	select {
