@@ -63,7 +63,7 @@ type Packet struct {
 
 	ID uint32
 
-	// status 1 bytes
+	// CMD 1 byte
 	// PSH  0b1000,0000
 	// FIN  0b0100,0000
 	// PING 0b0010,0000
