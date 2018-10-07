@@ -1,9 +1,0 @@
-package link
-
-/*var (
-    ESTAB      = errors.New("ESTAB")
-    FIN_WAIT   = errors.New("FIN_WAIT")
-    CLOSE_WAIT = errors.New("CLOSE_WAIT")
-    CLOSED     = errors.New("CLOSED")
-    RST        = errors.New("RST")
-)*/
