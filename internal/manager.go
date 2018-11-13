@@ -1,6 +1,7 @@
-package link
+package internal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Sherlock-Holo/link"
 )
 
 type writeRequest struct {
@@ -24,8 +27,8 @@ type Manager struct {
 	maxID   int32
 	usedIDs map[uint32]bool
 
-	ctx       chan struct{} // ctx can recv means manager is closed
-	closeOnce int32
+	ctx          context.Context // when ctx is closed, manager is closed
+	ctxCloseFunc context.CancelFunc
 
 	writes chan writeRequest // write chan limit link don't write too quickly
 
@@ -48,10 +51,10 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 		maxID:   -1,
 		usedIDs: make(map[uint32]bool),
 
-		ctx: make(chan struct{}),
-
 		writes: make(chan writeRequest, 1),
 	}
+
+	manager.ctx, manager.ctxCloseFunc = context.WithCancel(context.Background())
 
 	if config == nil {
 		config = DefaultConfig
@@ -136,14 +139,14 @@ func (m *Manager) writePacket(p *Packet) error {
 	}
 
 	select {
-	case <-m.ctx:
-		return io.ErrClosedPipe
+	case <-m.ctx.Done():
+		return link.ErrManagerClosed
 	case m.writes <- req:
 	}
 
 	select {
-	case <-m.ctx:
-		return io.ErrClosedPipe
+	case <-m.ctx.Done():
+		return link.ErrManagerClosed
 	case <-req.written:
 		return nil
 	}
@@ -151,30 +154,31 @@ func (m *Manager) writePacket(p *Packet) error {
 
 // Close close the manager and close all links belong to this manager.
 func (m *Manager) Close() (err error) {
-	if atomic.CompareAndSwapInt32(&m.closeOnce, 0, 1) {
-		close(m.ctx)
-
-		m.links.Range(func(_, value interface{}) bool {
-			value.(*Link).managerClosed()
-			return true
-		})
-
-		if m.keepaliveTicker != nil {
-			m.keepaliveTicker.Stop()
-			select {
-			case <-m.keepaliveTicker.C:
-			default:
-			}
-		}
-
-		if m.timeoutTimer != nil {
-			m.timeoutTimer.Stop()
-		}
-
-		err = m.conn.Close()
+	select {
+	case <-m.ctx.Done():
+		return
+	default:
+		m.ctxCloseFunc()
 	}
 
-	return
+	m.links.Range(func(_, value interface{}) bool {
+		value.(*Link).closeByPeer()
+		return true
+	})
+
+	if m.keepaliveTicker != nil {
+		m.keepaliveTicker.Stop()
+		select {
+		case <-m.keepaliveTicker.C:
+		default:
+		}
+	}
+
+	if m.timeoutTimer != nil {
+		m.timeoutTimer.Stop()
+	}
+
+	return m.conn.Close()
 }
 
 // removeLink recv FIN and send FIN will remove link.
@@ -186,7 +190,7 @@ func (m *Manager) removeLink(id uint32) {
 func (m *Manager) readLoop() {
 	for {
 		select {
-		case <-m.ctx:
+		case <-m.ctx.Done():
 			return
 		default:
 		}
@@ -211,7 +215,7 @@ func (m *Manager) readLoop() {
 				// check id is used or not,
 				// make sure don't miss id and don't reopen a closed link.
 				if !(m.usedIDs[uint32(packet.ID)]) {
-					link := newLink(packet.ID, m)
+					link := dial(packet.ID, m)
 					m.usedIDs[uint32(packet.ID)] = true
 					m.links.Store(link.ID, link)
 
@@ -221,7 +225,7 @@ func (m *Manager) readLoop() {
 				}
 			}
 
-		case ACK, FIN, RST:
+		case ACK, CLOSE:
 			if link, ok := m.links.Load(packet.ID); ok {
 				link.(*Link).pushPacket(packet)
 			}
@@ -249,7 +253,7 @@ func (m *Manager) readLoop() {
 func (m *Manager) writeLoop() {
 	for {
 		select {
-		case <-m.ctx:
+		case <-m.ctx.Done():
 			return
 		case req := <-m.writes:
 			bytes := req.packet.bytes()
@@ -257,40 +261,20 @@ func (m *Manager) writeLoop() {
 				log.Println("manager writeLoop:", err)
 				m.Close()
 
-				// release bytes slice to pool
-				releaseBytes(bytes)
-
 				return
 			}
 
 			close(req.written)
-
-			// release bytes slice to pool
-			releaseBytes(bytes)
 		}
-	}
-}
-
-// NewLink create a Link, if manager is closed, err != nil.
-// recommend to use Dial because NewLink will be deprecated in the future.
-func (m *Manager) NewLink() (link *Link, err error) {
-	link = newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
-
-	select {
-	case <-m.ctx:
-		return nil, errors.New("manager closed")
-	default:
-		m.links.Store(link.ID, link)
-		return link, nil
 	}
 }
 
 // Dial create a Link, if manager is closed, err != nil.
 func (m *Manager) Dial() (link *Link, err error) {
-	link = newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m)
+	link = dial(uint32(atomic.AddInt32(&m.maxID, 1)), m)
 
 	select {
-	case <-m.ctx:
+	case <-m.ctx.Done():
 		return nil, errors.New("manager closed")
 	default:
 		m.links.Store(link.ID, link)
@@ -301,7 +285,7 @@ func (m *Manager) Dial() (link *Link, err error) {
 // Accept accept a new Link, if manager is closed, err != nil.
 func (m *Manager) Accept() (link *Link, err error) {
 	select {
-	case <-m.ctx:
+	case <-m.ctx.Done():
 		return nil, errors.New("broken manager")
 	case link = <-m.acceptQueue:
 		return link, nil
@@ -311,7 +295,7 @@ func (m *Manager) Accept() (link *Link, err error) {
 // IsClosed return if the manager closed or not.
 func (m *Manager) IsClosed() bool {
 	select {
-	case <-m.ctx:
+	case <-m.ctx.Done():
 		return true
 	default:
 		return false

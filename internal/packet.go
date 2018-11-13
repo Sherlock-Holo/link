@@ -1,28 +1,12 @@
-package link
+package internal
 
 import (
 	"encoding/binary"
 	"fmt"
-	"sync"
 )
 
 type VersionErr struct {
 	Version uint8
-}
-
-// release bytes slice to pool
-var bytesPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, HeaderLength)
-	},
-}
-
-func getBytes() []byte {
-	return bytesPool.Get().([]byte)
-}
-
-func releaseBytes(b []byte) {
-	bytesPool.Put(b[:HeaderLength])
 }
 
 func (e VersionErr) Error() string {
@@ -30,14 +14,13 @@ func (e VersionErr) Error() string {
 }
 
 const (
-	Version      = 2
+	Version      = 3
 	HeaderLength = 1 + 4 + 1 + 2
 
-	PSH  = 128
-	FIN  = 64
-	PING = 32
-	ACK  = 16 // 2 bytes data, uint16, the other side has read [uint16] bytes data
-	RST  = 8  // tell other side there is an error, we should close link immediately
+	PSH   = 128
+	CLOSE = 64
+	PING  = 32
+	ACK   = 16 // 2 bytes data, uint16, the other side has read [uint16] bytes data
 )
 
 type PacketHeader []byte
@@ -64,15 +47,15 @@ type Packet struct {
 	ID uint32
 
 	// CMD 1 byte
-	// PSH  0b1000,0000
-	// FIN  0b0100,0000
-	// PING 0b0010,0000
-	// ACK  0b0001,0000
-	// RST  0b0000,1000
-	// RSV  0b0000,0000
+	// PSH    0b1000,0000
+	// CLOSE  0b0100,0000
+	// PING   0b0010,0000
+	// ACK    0b0001,0000
+	// RSV    0b0000,0000
 	CMD uint8
 
-	PayloadLength uint16
+	payloadLength uint16
+	PayloadLength int
 	Payload       []byte
 }
 
@@ -88,8 +71,8 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	case PSH:
 		packet.CMD = PSH
 
-	case FIN:
-		packet.CMD = FIN
+	case CLOSE:
+		packet.CMD = CLOSE
 
 	case PING:
 		packet.CMD = PING
@@ -97,16 +80,14 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	case ACK:
 		packet.CMD = ACK
 
-	case RST:
-		packet.CMD = RST
-
 	default:
 		panic(fmt.Sprintf("not allowed cmd code %d", cmd))
 	}
 
 	if payload != nil {
 		packet.Payload = payload
-		packet.PayloadLength = uint16(len(payload))
+		packet.PayloadLength = len(payload)
+		packet.payloadLength = uint16(packet.PayloadLength)
 	}
 
 	return &packet
@@ -130,8 +111,7 @@ func split(id uint32, p []byte) []*Packet {
 
 // bytes encode packet to []byte.
 func (p *Packet) bytes() []byte {
-	// reduce slice make
-	b := getBytes()
+	b := make([]byte, HeaderLength, HeaderLength+len(p.Payload))
 
 	b[0] = p.Version
 	binary.BigEndian.PutUint32(b[1:5], p.ID)
@@ -142,7 +122,7 @@ func (p *Packet) bytes() []byte {
 	case PSH:
 		cmdByte |= 1 << 7
 
-	case FIN:
+	case CLOSE:
 		cmdByte |= 1 << 6
 
 	case PING:
@@ -150,14 +130,12 @@ func (p *Packet) bytes() []byte {
 
 	case ACK:
 		cmdByte |= 1 << 4
-
-	case RST:
-		cmdByte |= 1 << 3
 	}
 
 	b[5] = cmdByte
 
-	binary.BigEndian.PutUint16(b[6:], p.PayloadLength)
+	binary.BigEndian.PutUint16(b[6:], p.payloadLength)
+	p.PayloadLength = int(p.payloadLength)
 
 	if p.Payload != nil {
 		b = append(b, p.Payload...)
@@ -185,7 +163,7 @@ func decode(b []byte) (*Packet, error) {
 	}
 
 	if cmdByte&(1<<6) != 0 {
-		p.CMD = FIN
+		p.CMD = CLOSE
 	}
 
 	if cmdByte&(1<<5) != 0 {
@@ -196,14 +174,12 @@ func decode(b []byte) (*Packet, error) {
 		p.CMD = ACK
 	}
 
-	if cmdByte&(1<<3) != 0 {
-		p.CMD = RST
-	}
-
-	p.PayloadLength = binary.BigEndian.Uint16(b[6:8])
+	p.payloadLength = binary.BigEndian.Uint16(b[6:8])
+	p.PayloadLength = int(p.payloadLength)
 
 	if p.PayloadLength != 0 {
-		p.Payload = b[8:]
+		p.Payload = make([]byte, len(b[8:]))
+		copy(p.Payload, b[8:])
 	}
 
 	return p, nil
