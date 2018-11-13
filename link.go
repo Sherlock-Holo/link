@@ -1,4 +1,4 @@
-package internal
+package link
 
 import (
 	"bytes"
@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"testing/iotest"
 	"time"
-
-	"github.com/Sherlock-Holo/link"
 )
 
 const writeWind = 768 * 1024
@@ -220,7 +218,7 @@ func (l *Link) Write(p []byte) (int, error) {
 
 			case <-l.writeEvent:
 				if err := l.manager.writePacket(packet); err != nil {
-					return 0, link.ErrManagerClosed
+					return 0, ErrManagerClosed
 				}
 
 				if atomic.AddInt32(&l.writeWind, -int32(packet.PayloadLength)) > 0 {
@@ -244,7 +242,7 @@ func (l *Link) Close() error {
 	l.manager.removeLink(l.ID)
 
 	if err := l.manager.writePacket(newPacket(l.ID, CLOSE, nil)); err != nil {
-		return link.ErrManagerClosed
+		return ErrManagerClosed
 	}
 
 	return nil
@@ -308,7 +306,7 @@ func (l *Link) RemoteAddr() net.Addr {
 func (l *Link) SetDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
-		return link.ErrLinkClosed
+		return ErrLinkClosed
 	default:
 	}
 
@@ -327,7 +325,7 @@ func (l *Link) SetDeadline(t time.Time) error {
 func (l *Link) SetReadDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
-		return link.ErrLinkClosed
+		return ErrLinkClosed
 	default:
 	}
 
@@ -341,7 +339,7 @@ func (l *Link) SetReadDeadline(t time.Time) error {
 func (l *Link) SetWriteDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
-		return link.ErrLinkClosed
+		return ErrLinkClosed
 	default:
 	}
 

@@ -1,4 +1,4 @@
-package internal
+package link
 
 import (
 	"context"
@@ -9,8 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/Sherlock-Holo/link"
 )
 
 type writeRequest struct {
@@ -140,13 +138,13 @@ func (m *Manager) writePacket(p *Packet) error {
 
 	select {
 	case <-m.ctx.Done():
-		return link.ErrManagerClosed
+		return ErrManagerClosed
 	case m.writes <- req:
 	}
 
 	select {
 	case <-m.ctx.Done():
-		return link.ErrManagerClosed
+		return ErrManagerClosed
 	case <-req.written:
 		return nil
 	}

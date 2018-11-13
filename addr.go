@@ -1,4 +1,4 @@
-package internal
+package link
 
 type Addr struct {
 	ID string
