@@ -3,7 +3,6 @@ package link
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"sync"
@@ -103,30 +102,7 @@ func (m *Manager) keepAlive() {
 
 // readPacket read a packet from the underlayer conn.
 func (m *Manager) readPacket() (*Packet, error) {
-	header := make(PacketHeader, HeaderLength)
-	if _, err := io.ReadFull(m.conn, header); err != nil {
-		return nil, fmt.Errorf("manager read packet header: %s", err)
-	}
-
-	if header.version() != Version {
-		return nil, VersionErr{header.version()}
-	}
-
-	var payload []byte
-
-	if length := header.payloadLength(); length != 0 {
-		payload = make([]byte, length)
-		if _, err := io.ReadFull(m.conn, payload); err != nil {
-			return nil, fmt.Errorf("manager read packet payload: %s", err)
-		}
-	}
-
-	packet, err := decode(append(header, payload...))
-	if err != nil {
-		return nil, fmt.Errorf("manager read packet decode: %s", err)
-	}
-
-	return packet, nil
+	return decodeFrom(m.conn)
 }
 
 // writePacket write a packet to other side over the underlayer conn.

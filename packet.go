@@ -3,6 +3,7 @@ package link
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 type VersionErr struct {
@@ -14,8 +15,8 @@ func (e VersionErr) Error() string {
 }
 
 const (
-	Version      = 3
-	HeaderLength = 1 + 4 + 1 + 2
+	Version                    = 3
+	HeaderWithoutPayloadLength = 1 + 4 + 1
 
 	PSH   = 128
 	CLOSE = 64
@@ -23,24 +24,7 @@ const (
 	ACK   = 16 // 2 bytes data, uint16, the other side has read [uint16] bytes data
 )
 
-type PacketHeader []byte
-
-// version get packetHeader version.
-func (h PacketHeader) version() uint8 {
-	return h[0]
-}
-
-// id get packetHeader id.
-func (h PacketHeader) id() uint32 {
-	return binary.BigEndian.Uint32(h[1:5])
-}
-
-// payloadLength get packetHeader payload length.
-func (h PacketHeader) payloadLength() int {
-	return int(binary.BigEndian.Uint16(h[6:]))
-}
-
-// [header 1 + 4 + 1 + 2 bytes] [payload <=65535 bytes]
+// [header 1 + 4 + 1 + indefinite bytes] [payload]
 type Packet struct {
 	Version uint8
 
@@ -54,9 +38,14 @@ type Packet struct {
 	// RSV    0b0000,0000
 	CMD uint8
 
-	payloadLength uint16
-	PayloadLength int
-	Payload       []byte
+	// When len(payload) < 254, use shortPayloadLength.
+	// When 255 <= len(payload) <= 65535, use middlePayloadLength.
+	// Otherwise use longPayloadLength.
+	shortPayloadLength  uint8
+	middlePayloadLength uint16
+	longPayloadLength   uint32
+	PayloadLength       int
+	Payload             []byte
 }
 
 // newPacket create a new packet.
@@ -87,7 +76,17 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	if payload != nil {
 		packet.Payload = payload
 		packet.PayloadLength = len(payload)
-		packet.payloadLength = uint16(packet.PayloadLength)
+
+		switch {
+		case packet.PayloadLength < 254:
+			packet.shortPayloadLength = uint8(packet.PayloadLength)
+
+		case 255 <= packet.PayloadLength && packet.PayloadLength <= 65535:
+			packet.middlePayloadLength = uint16(packet.PayloadLength)
+
+		default:
+			packet.longPayloadLength = uint32(packet.PayloadLength)
+		}
 	}
 
 	return &packet
@@ -111,7 +110,18 @@ func split(id uint32, p []byte) []*Packet {
 
 // bytes encode packet to []byte.
 func (p *Packet) bytes() []byte {
-	b := make([]byte, HeaderLength, HeaderLength+len(p.Payload))
+	// b := make([]byte, HeaderLength, HeaderLength+len(p.Payload))
+	var b []byte
+	switch {
+	case p.PayloadLength < 254:
+		b = make([]byte, HeaderWithoutPayloadLength+1, HeaderWithoutPayloadLength+1+p.PayloadLength)
+
+	case 255 <= p.PayloadLength && p.PayloadLength <= 65535:
+		b = make([]byte, HeaderWithoutPayloadLength+2, HeaderWithoutPayloadLength+2+p.PayloadLength)
+
+	default:
+		b = make([]byte, HeaderWithoutPayloadLength+4, HeaderWithoutPayloadLength+4+p.PayloadLength)
+	}
 
 	b[0] = p.Version
 	binary.BigEndian.PutUint32(b[1:5], p.ID)
@@ -133,9 +143,17 @@ func (p *Packet) bytes() []byte {
 	}
 
 	b[5] = cmdByte
+	b[6] = p.shortPayloadLength
 
-	binary.BigEndian.PutUint16(b[6:], p.payloadLength)
-	p.PayloadLength = int(p.payloadLength)
+	switch {
+	case p.shortPayloadLength < 254:
+
+	case p.shortPayloadLength == 254:
+		binary.BigEndian.PutUint16(b[7:], p.middlePayloadLength)
+
+	default:
+		binary.BigEndian.PutUint32(b[7:], p.longPayloadLength)
+	}
 
 	if p.Payload != nil {
 		b = append(b, p.Payload...)
@@ -145,14 +163,26 @@ func (p *Packet) bytes() []byte {
 }
 
 // decode decode a packet from []byte.
-func decode(b []byte) (*Packet, error) {
-	if len(b) < HeaderLength {
-		return nil, fmt.Errorf("not enough data, length %d", len(b))
+func decodeFrom(r io.Reader) (*Packet, error) {
+	b := make([]byte, HeaderWithoutPayloadLength+1)
+
+	if _, err := io.ReadFull(r, b); err != nil {
+		if err == io.ErrUnexpectedEOF {
+			return nil, ErrLinkClosed
+		}
+		return nil, err
 	}
 
 	p := new(Packet)
 
 	p.Version = b[0]
+
+	if p.Version != Version {
+		return nil, ErrVersion{
+			Receive:     p.Version,
+			NeedVersion: Version,
+		}
+	}
 
 	p.ID = binary.BigEndian.Uint32(b[1:5])
 
@@ -174,12 +204,47 @@ func decode(b []byte) (*Packet, error) {
 		p.CMD = ACK
 	}
 
-	p.payloadLength = binary.BigEndian.Uint16(b[6:8])
-	p.PayloadLength = int(p.payloadLength)
+	p.shortPayloadLength = b[6]
 
-	if p.PayloadLength != 0 {
-		p.Payload = make([]byte, len(b[8:]))
-		copy(p.Payload, b[8:])
+	switch {
+	case p.shortPayloadLength < 254:
+		p.PayloadLength = int(p.shortPayloadLength)
+		p.Payload = make([]byte, p.PayloadLength)
+
+	case p.shortPayloadLength == 254:
+		b = b[:2]
+
+		if _, err := io.ReadFull(r, b); err != nil {
+			if err == io.ErrUnexpectedEOF {
+				return nil, ErrLinkClosed
+			}
+			return nil, err
+		}
+
+		p.middlePayloadLength = binary.BigEndian.Uint16(b)
+		p.PayloadLength = int(p.middlePayloadLength)
+		p.Payload = make([]byte, p.PayloadLength)
+
+	default:
+		b = b[:4]
+
+		if _, err := io.ReadFull(r, b); err != nil {
+			if err == io.ErrUnexpectedEOF {
+				return nil, ErrLinkClosed
+			}
+			return nil, err
+		}
+
+		p.longPayloadLength = binary.BigEndian.Uint32(b)
+		p.PayloadLength = int(p.longPayloadLength)
+		p.Payload = make([]byte, p.PayloadLength)
+	}
+
+	if _, err := io.ReadFull(r, p.Payload); err != nil {
+		if err == io.ErrUnexpectedEOF {
+			return nil, ErrLinkClosed
+		}
+		return nil, err
 	}
 
 	return p, nil
