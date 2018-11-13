@@ -44,65 +44,6 @@ type Link struct {
 	writeDeadline time.Time
 }
 
-func (l *Link) LocalAddr() net.Addr {
-	return Addr{
-		ID: strconv.Itoa(int(l.ID)),
-	}
-}
-
-func (l *Link) RemoteAddr() net.Addr {
-	return Addr{
-		ID: strconv.Itoa(int(l.ID)),
-	}
-}
-
-func (l *Link) SetDeadline(t time.Time) error {
-	select {
-	case <-l.ctx.Done():
-		return link.ErrLinkClosed
-	default:
-	}
-
-	l.readDLLock.Lock()
-	l.writeDLLock.Lock()
-	defer func() {
-		l.readDLLock.Unlock()
-		l.writeDLLock.Unlock()
-	}()
-
-	l.readDeadline = t
-	l.writeDeadline = t
-	return nil
-}
-
-func (l *Link) SetReadDeadline(t time.Time) error {
-	select {
-	case <-l.ctx.Done():
-		return link.ErrLinkClosed
-	default:
-	}
-
-	l.readDLLock.Lock()
-	defer l.readDLLock.Unlock()
-
-	l.readDeadline = t
-	return nil
-}
-
-func (l *Link) SetWriteDeadline(t time.Time) error {
-	select {
-	case <-l.ctx.Done():
-		return link.ErrLinkClosed
-	default:
-	}
-
-	l.writeDLLock.Lock()
-	defer l.writeDLLock.Unlock()
-
-	l.writeDeadline = t
-	return nil
-}
-
 // dial will create a Link, but the Link isn't created at other side,
 // user should write some data to let other side create the link.
 func dial(id uint32, m *Manager) *Link {
@@ -119,7 +60,7 @@ func dial(id uint32, m *Manager) *Link {
 		writeEvent: make(chan struct{}, 1),
 	}
 
-	link.ctx, link.ctxCloseFunc = context.WithCancel(context.Background())
+	link.ctx, link.ctxCloseFunc = context.WithCancel(m.ctx)
 
 	link.writeEventNotify()
 
@@ -350,4 +291,63 @@ func (l *Link) sendACK(n int) {
 			}
 		}
 	}
+}
+
+func (l *Link) LocalAddr() net.Addr {
+	return Addr{
+		ID: strconv.Itoa(int(l.ID)),
+	}
+}
+
+func (l *Link) RemoteAddr() net.Addr {
+	return Addr{
+		ID: strconv.Itoa(int(l.ID)),
+	}
+}
+
+func (l *Link) SetDeadline(t time.Time) error {
+	select {
+	case <-l.ctx.Done():
+		return link.ErrLinkClosed
+	default:
+	}
+
+	l.readDLLock.Lock()
+	l.writeDLLock.Lock()
+	defer func() {
+		l.readDLLock.Unlock()
+		l.writeDLLock.Unlock()
+	}()
+
+	l.readDeadline = t
+	l.writeDeadline = t
+	return nil
+}
+
+func (l *Link) SetReadDeadline(t time.Time) error {
+	select {
+	case <-l.ctx.Done():
+		return link.ErrLinkClosed
+	default:
+	}
+
+	l.readDLLock.Lock()
+	defer l.readDLLock.Unlock()
+
+	l.readDeadline = t
+	return nil
+}
+
+func (l *Link) SetWriteDeadline(t time.Time) error {
+	select {
+	case <-l.ctx.Done():
+		return link.ErrLinkClosed
+	default:
+	}
+
+	l.writeDLLock.Lock()
+	defer l.writeDLLock.Unlock()
+
+	l.writeDeadline = t
+	return nil
 }
