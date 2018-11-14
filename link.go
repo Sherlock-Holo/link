@@ -192,7 +192,7 @@ func (l *Link) Write(p []byte) (int, error) {
 		}
 	}
 
-	if len(p) <= 65535 {
+	/*if len(p) <= 65535 {
 		select {
 		case <-l.ctx.Done():
 			return 0, io.ErrClosedPipe
@@ -226,6 +226,21 @@ func (l *Link) Write(p []byte) (int, error) {
 				}
 			}
 		}
+		return len(p), nil
+	}*/
+	select {
+	case <-l.ctx.Done():
+		return 0, io.ErrClosedPipe
+
+	case <-l.writeEvent:
+		if err := l.manager.writePacket(newPacket(l.ID, PSH, p)); err != nil {
+			return 0, err
+		}
+
+		if atomic.AddInt32(&l.writeWind, -int32(len(p))) > 0 {
+			l.writeEventNotify()
+		}
+
 		return len(p), nil
 	}
 }

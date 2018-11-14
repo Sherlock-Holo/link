@@ -6,14 +6,6 @@ import (
 	"io"
 )
 
-type VersionErr struct {
-	Version uint8
-}
-
-func (e VersionErr) Error() string {
-	return fmt.Sprintf("packet version %d, expect %d", e.Version, Version)
-}
-
 const (
 	Version                    = 3
 	HeaderWithoutPayloadLength = 1 + 4 + 1
@@ -24,7 +16,7 @@ const (
 	ACK   = 16 // 2 bytes data, uint16, the other side has read [uint16] bytes data
 )
 
-// [header 1 + 4 + 1 + indefinite bytes] [payload]
+// [header 1 + 4 + 1 + indefinite length bytes] [payload]
 type Packet struct {
 	Version uint8
 
@@ -39,7 +31,7 @@ type Packet struct {
 	CMD uint8
 
 	// When len(payload) < 254, use shortPayloadLength.
-	// When 255 <= len(payload) <= 65535, use middlePayloadLength.
+	// When 254 <= len(payload) <= 65535, use middlePayloadLength.
 	// Otherwise use longPayloadLength.
 	shortPayloadLength  uint8
 	middlePayloadLength uint16
@@ -81,10 +73,12 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 		case packet.PayloadLength < 254:
 			packet.shortPayloadLength = uint8(packet.PayloadLength)
 
-		case 255 <= packet.PayloadLength && packet.PayloadLength <= 65535:
+		case 254 <= packet.PayloadLength && packet.PayloadLength <= 65535:
+			packet.shortPayloadLength = 254
 			packet.middlePayloadLength = uint16(packet.PayloadLength)
 
 		default:
+			packet.shortPayloadLength = 255
 			packet.longPayloadLength = uint32(packet.PayloadLength)
 		}
 	}
@@ -92,31 +86,14 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 	return &packet
 }
 
-// split if len([]byte) > 65535, split the []byte ensure every []byte is <= 65535 in []*Packet.
-func split(id uint32, p []byte) []*Packet {
-	if len(p) <= 65536 {
-		return []*Packet{newPacket(id, PSH, p)}
-	}
-
-	var ps []*Packet
-
-	for len(p) > 65535 {
-		ps = append(ps, newPacket(id, PSH, p))
-		p = p[65535:]
-	}
-	ps = append(ps, newPacket(id, PSH, p)) // append last data which size <= 65535
-	return ps
-}
-
 // bytes encode packet to []byte.
 func (p *Packet) bytes() []byte {
-	// b := make([]byte, HeaderLength, HeaderLength+len(p.Payload))
 	var b []byte
 	switch {
 	case p.PayloadLength < 254:
 		b = make([]byte, HeaderWithoutPayloadLength+1, HeaderWithoutPayloadLength+1+p.PayloadLength)
 
-	case 255 <= p.PayloadLength && p.PayloadLength <= 65535:
+	case 254 <= p.PayloadLength && p.PayloadLength <= 65535:
 		b = make([]byte, HeaderWithoutPayloadLength+2, HeaderWithoutPayloadLength+2+p.PayloadLength)
 
 	default:
