@@ -130,6 +130,12 @@ func (l *Link) Read(p []byte) (n int, err error) {
 			}
 			err = io.ErrClosedPipe
 
+			select {
+			case <-l.manager.ctx.Done():
+				return 0, ErrManagerClosed
+			default:
+			}
+
 			l.eof.Do(func() {
 				err = io.EOF
 			})
@@ -163,6 +169,12 @@ func (l *Link) Read(p []byte) (n int, err error) {
 		case <-l.ctx.Done():
 			err = io.ErrClosedPipe
 
+			select {
+			case <-l.manager.ctx.Done():
+				return 0, ErrManagerClosed
+			default:
+			}
+
 			l.eof.Do(func() {
 				err = io.EOF
 			})
@@ -186,50 +198,26 @@ func (l *Link) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		select {
 		case <-l.ctx.Done():
+			select {
+			case <-l.manager.ctx.Done():
+				return 0, ErrManagerClosed
+			default:
+			}
+
 			return 0, io.ErrClosedPipe
 		default:
 			return 0, nil
 		}
 	}
 
-	/*if len(p) <= 65535 {
-		select {
-		case <-l.ctx.Done():
-			return 0, io.ErrClosedPipe
-
-		case <-l.writeEvent:
-			if err := l.manager.writePacket(newPacket(l.ID, PSH, p)); err != nil {
-				return 0, err
-			}
-
-			if atomic.AddInt32(&l.writeWind, -int32(len(p))) > 0 {
-				l.writeEventNotify()
-			}
-
-			return len(p), nil
-		}
-
-	} else {
-		packets := split(l.ID, p)
-		for _, packet := range packets {
-			select {
-			case <-l.ctx.Done():
-				return 0, io.ErrClosedPipe
-
-			case <-l.writeEvent:
-				if err := l.manager.writePacket(packet); err != nil {
-					return 0, ErrManagerClosed
-				}
-
-				if atomic.AddInt32(&l.writeWind, -int32(packet.PayloadLength)) > 0 {
-					l.writeEventNotify()
-				}
-			}
-		}
-		return len(p), nil
-	}*/
 	select {
 	case <-l.ctx.Done():
+		select {
+		case <-l.manager.ctx.Done():
+			return 0, ErrManagerClosed
+		default:
+		}
+
 		return 0, io.ErrClosedPipe
 
 	case <-l.writeEvent:
