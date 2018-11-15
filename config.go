@@ -7,18 +7,24 @@ type Config struct {
 	AcceptQueueSize   int
 	KeepaliveInterval time.Duration
 	BufferSize        int
-}
-
-// KeepaliveConfig DefaultConfig enable keepalive.
-var KeepaliveConfig = &Config{
-	AcceptQueueSize:   1000,
-	KeepaliveInterval: 15 * time.Second,
-	BufferSize:        65535,
+	EnableLog         bool
 }
 
 // DefaultConfig default config.
-var DefaultConfig = &Config{
-	AcceptQueueSize:   1000,
-	KeepaliveInterval: 0,
-	BufferSize:        65535,
+func DefaultConfig() *Config {
+	return &Config{
+		AcceptQueueSize: 1000,
+		BufferSize:      65535,
+		EnableLog:       true,
+	}
+}
+
+// KeepaliveConfig DefaultConfig enable keepalive.
+func KeepaliveConfig() *Config {
+	return &Config{
+		AcceptQueueSize:   1000,
+		KeepaliveInterval: 15 * time.Second,
+		BufferSize:        65535,
+		EnableLog:         true,
+	}
 }
