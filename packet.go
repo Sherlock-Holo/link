@@ -94,10 +94,10 @@ func (p *Packet) bytes() []byte {
 		b = make([]byte, HeaderWithoutPayloadLength+1, HeaderWithoutPayloadLength+1+p.PayloadLength)
 
 	case 254 <= p.PayloadLength && p.PayloadLength <= 65535:
-		b = make([]byte, HeaderWithoutPayloadLength+2, HeaderWithoutPayloadLength+2+p.PayloadLength)
+		b = make([]byte, HeaderWithoutPayloadLength+1+2, HeaderWithoutPayloadLength+2+p.PayloadLength)
 
 	default:
-		b = make([]byte, HeaderWithoutPayloadLength+4, HeaderWithoutPayloadLength+4+p.PayloadLength)
+		b = make([]byte, HeaderWithoutPayloadLength+1+4, HeaderWithoutPayloadLength+4+p.PayloadLength)
 	}
 
 	b[0] = p.Version

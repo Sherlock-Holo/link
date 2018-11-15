@@ -115,7 +115,7 @@ func (l *Link) pushPacket(p *Packet) {
 
 func (l *Link) Read(p []byte) (n int, err error) {
 	l.readDLLock.RLock()
-	if time.Now().After(l.readDeadline) {
+	if !l.readDeadline.IsZero() && time.Now().After(l.readDeadline) {
 		l.readDLLock.RUnlock()
 		return 0, iotest.ErrTimeout
 	} else {
@@ -176,7 +176,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 
 func (l *Link) Write(p []byte) (int, error) {
 	l.writeDLLock.RLock()
-	if time.Now().After(l.writeDeadline) {
+	if !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline) {
 		l.writeDLLock.RUnlock()
 		return 0, iotest.ErrTimeout
 	} else {
@@ -332,8 +332,10 @@ func (l *Link) SetDeadline(t time.Time) error {
 		l.writeDLLock.Unlock()
 	}()
 
-	l.readDeadline = t
-	l.writeDeadline = t
+	if !t.IsZero() {
+		l.readDeadline = t
+		l.writeDeadline = t
+	}
 	return nil
 }
 
@@ -347,7 +349,9 @@ func (l *Link) SetReadDeadline(t time.Time) error {
 	l.readDLLock.Lock()
 	defer l.readDLLock.Unlock()
 
-	l.readDeadline = t
+	if !t.IsZero() {
+		l.readDeadline = t
+	}
 	return nil
 }
 
@@ -361,6 +365,8 @@ func (l *Link) SetWriteDeadline(t time.Time) error {
 	l.writeDLLock.Lock()
 	defer l.writeDLLock.Unlock()
 
-	l.writeDeadline = t
+	if !t.IsZero() {
+		l.writeDeadline = t
+	}
 	return nil
 }
