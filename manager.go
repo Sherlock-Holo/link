@@ -38,6 +38,8 @@ type Manager struct {
 	initTimerOnce int32 // make sure Timer init once
 
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
+
+	enableLog bool
 }
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
@@ -54,8 +56,10 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 	manager.ctx, manager.ctxCloseFunc = context.WithCancel(context.Background())
 
 	if config == nil {
-		config = DefaultConfig
+		config = DefaultConfig()
 	}
+
+	manager.enableLog = config.EnableLog
 
 	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
 
@@ -94,7 +98,9 @@ func (m *Manager) keepAlive() {
 	for range m.keepaliveTicker.C {
 		ping := newPacket(127, PING, []byte{byte(m.interval.Seconds())})
 		if err := m.writePacket(ping); err != nil {
-			log.Println("send ping failed", err)
+			if m.enableLog {
+				log.Println("send ping failed", err)
+			}
 			return
 		}
 	}
@@ -171,7 +177,6 @@ func (m *Manager) readLoop() {
 
 		packet, err := m.readPacket()
 		if err != nil {
-			log.Println(err)
 			m.Close()
 			return
 		}
@@ -210,11 +215,15 @@ func (m *Manager) readLoop() {
 
 			if atomic.CompareAndSwapInt32(&m.initTimerOnce, 0, 1) {
 				m.timeoutTimer = time.AfterFunc(timeout, func() {
-					log.Println("manager timeout")
+					if m.enableLog {
+						log.Println("manager timeout")
+					}
 					m.Close()
 				})
 
-				log.Println("init manager timer")
+				if m.enableLog {
+					log.Println("init manager timer")
+				}
 			}
 
 			m.timeoutTimer.Stop()
@@ -232,7 +241,9 @@ func (m *Manager) writeLoop() {
 		case req := <-m.writes:
 			bytes := req.packet.bytes()
 			if _, err := m.conn.Write(bytes); err != nil {
-				log.Println("manager writeLoop:", err)
+				if m.enableLog {
+					log.Println("manager writeLoop:", err)
+				}
 				m.Close()
 
 				return
