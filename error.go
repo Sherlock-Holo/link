@@ -1,8 +1,9 @@
 package link
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/pkg/errors"
 )
 
 var (
@@ -13,6 +14,14 @@ var (
 type ErrVersion struct {
 	Receive     uint8
 	NeedVersion uint8
+}
+
+type ErrCmd struct {
+	Receive uint8
+}
+
+func (ec ErrCmd) Error() string {
+	return fmt.Sprintf("receive error cmd %d", ec.Receive)
 }
 
 func (ev ErrVersion) Error() string {

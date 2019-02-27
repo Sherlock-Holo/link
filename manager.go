@@ -193,9 +193,9 @@ func (m *Manager) readLoop() {
 			} else {
 				// check id is used or not,
 				// make sure don't miss id and don't reopen a closed link.
-				if !(m.usedIDs[uint32(packet.ID)]) {
+				if !(m.usedIDs[packet.ID]) {
 					link := dial(packet.ID, m)
-					m.usedIDs[uint32(packet.ID)] = true
+					m.usedIDs[packet.ID] = true
 					m.links.Store(link.ID, link)
 
 					link.pushPacket(packet)

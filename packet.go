@@ -4,19 +4,28 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/pkg/errors"
 )
+
+type Cmd = uint8
 
 const (
-	Version                    = 3
-	HeaderWithoutPayloadLength = 1 + 4 + 1
+	Version = 3
 
-	PSH   = 128
-	CLOSE = 64
-	PING  = 32
-	ACK   = 16 // 2 bytes data, uint16, the other side has read [uint16] bytes data
+	VersionLength = 1
+	IDLength      = 4
+	CMDLength     = 1
+
+	HeaderWithoutPayloadLength = VersionLength + IDLength + CMDLength
+
+	PSH   Cmd = 1 << 7
+	CLOSE Cmd = 1 << 6
+	PING  Cmd = 1 << 5
+	ACK   Cmd = 1 << 4 // 2 bytes data, uint16, the other side has read [uint16] bytes data
 )
 
-// [header 1 + 4 + 1 + indefinite length bytes] [payload]
+// header[VersionLength + IDLength + CMDLength + indefinite length bytes] [payload]
 type Packet struct {
 	Version uint8
 
@@ -28,7 +37,7 @@ type Packet struct {
 	// PING   0b0010,0000
 	// ACK    0b0001,0000
 	// RSV    0b0000,0000
-	CMD uint8
+	CMD Cmd
 
 	// When len(payload) < 254, use shortPayloadLength.
 	// When 254 <= len(payload) <= 65535, use middlePayloadLength.
@@ -40,16 +49,15 @@ type Packet struct {
 	Payload             []byte
 }
 
-// newPacket create a new packet.
-// if cmd is FIN, RST, payload is nil.
-func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
-	packet := Packet{
+// newPacket create a new packet. if cmd is FIN, RST, payload should be nil.
+func newPacket(id uint32, cmd Cmd, payload []byte) *Packet {
+	packet := &Packet{
 		Version: Version,
 		ID:      id,
 	}
 
 	switch cmd {
-	case PSH:
+	/*case PSH:
 		packet.CMD = PSH
 
 	case CLOSE:
@@ -59,7 +67,9 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 		packet.CMD = PING
 
 	case ACK:
-		packet.CMD = ACK
+		packet.CMD = ACK*/
+	case PSH, CLOSE, PING, ACK:
+		packet.CMD = cmd
 
 	default:
 		panic(fmt.Sprintf("not allowed cmd code %d", cmd))
@@ -83,7 +93,7 @@ func newPacket(id uint32, cmd uint8, payload []byte) *Packet {
 		}
 	}
 
-	return &packet
+	return packet
 }
 
 // bytes encode packet to []byte.
@@ -94,16 +104,16 @@ func (p *Packet) bytes() []byte {
 		b = make([]byte, HeaderWithoutPayloadLength+1, HeaderWithoutPayloadLength+1+p.PayloadLength)
 
 	case 254 <= p.PayloadLength && p.PayloadLength <= 65535:
-		b = make([]byte, HeaderWithoutPayloadLength+1+2, HeaderWithoutPayloadLength+2+p.PayloadLength)
+		b = make([]byte, HeaderWithoutPayloadLength+1+2, HeaderWithoutPayloadLength+1+2+p.PayloadLength)
 
 	default:
-		b = make([]byte, HeaderWithoutPayloadLength+1+4, HeaderWithoutPayloadLength+4+p.PayloadLength)
+		b = make([]byte, HeaderWithoutPayloadLength+1+4, HeaderWithoutPayloadLength+1+4+p.PayloadLength)
 	}
 
 	b[0] = p.Version
-	binary.BigEndian.PutUint32(b[1:5], p.ID)
+	binary.BigEndian.PutUint32(b[1:1+IDLength], p.ID)
 
-	var cmdByte uint8
+	/*var cmdByte uint8
 
 	switch p.CMD {
 	case PSH:
@@ -117,19 +127,20 @@ func (p *Packet) bytes() []byte {
 
 	case ACK:
 		cmdByte |= 1 << 4
-	}
+	}*/
+	cmdByte := p.CMD
 
 	b[5] = cmdByte
-	b[6] = p.shortPayloadLength
+	b[HeaderWithoutPayloadLength] = p.shortPayloadLength
 
 	switch {
 	case p.shortPayloadLength < 254:
 
 	case p.shortPayloadLength == 254:
-		binary.BigEndian.PutUint16(b[7:], p.middlePayloadLength)
+		binary.BigEndian.PutUint16(b[HeaderWithoutPayloadLength+1:], p.middlePayloadLength)
 
 	default:
-		binary.BigEndian.PutUint32(b[7:], p.longPayloadLength)
+		binary.BigEndian.PutUint32(b[HeaderWithoutPayloadLength+1:], p.longPayloadLength)
 	}
 
 	if p.Payload != nil {
@@ -147,7 +158,7 @@ func decodeFrom(r io.Reader) (*Packet, error) {
 		if err == io.ErrUnexpectedEOF {
 			return nil, ErrLinkClosed
 		}
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 
 	p := new(Packet)
@@ -155,17 +166,17 @@ func decodeFrom(r io.Reader) (*Packet, error) {
 	p.Version = b[0]
 
 	if p.Version != Version {
-		return nil, ErrVersion{
+		return nil, errors.WithStack(ErrVersion{
 			Receive:     p.Version,
 			NeedVersion: Version,
-		}
+		})
 	}
 
-	p.ID = binary.BigEndian.Uint32(b[1:5])
+	p.ID = binary.BigEndian.Uint32(b[1 : 1+IDLength])
 
 	cmdByte := b[5]
 
-	if cmdByte&(1<<7) != 0 {
+	/*if cmdByte&(1<<7) != 0 {
 		p.CMD = PSH
 	}
 
@@ -179,9 +190,16 @@ func decodeFrom(r io.Reader) (*Packet, error) {
 
 	if cmdByte&(1<<4) != 0 {
 		p.CMD = ACK
+	}*/
+	switch cmdByte {
+	case PSH, CLOSE, PING, ACK:
+		p.CMD = cmdByte
+
+	default:
+		return nil, errors.WithStack(ErrCmd{Receive: cmdByte})
 	}
 
-	p.shortPayloadLength = b[6]
+	p.shortPayloadLength = b[HeaderWithoutPayloadLength]
 
 	switch {
 	case p.shortPayloadLength < 254:
@@ -195,7 +213,7 @@ func decodeFrom(r io.Reader) (*Packet, error) {
 			if err == io.ErrUnexpectedEOF {
 				return nil, ErrLinkClosed
 			}
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 
 		p.middlePayloadLength = binary.BigEndian.Uint16(b)
@@ -209,7 +227,7 @@ func decodeFrom(r io.Reader) (*Packet, error) {
 			if err == io.ErrUnexpectedEOF {
 				return nil, ErrLinkClosed
 			}
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 
 		p.longPayloadLength = binary.BigEndian.Uint32(b)
@@ -221,7 +239,7 @@ func decodeFrom(r io.Reader) (*Packet, error) {
 		if err == io.ErrUnexpectedEOF {
 			return nil, ErrLinkClosed
 		}
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 
 	return p, nil
