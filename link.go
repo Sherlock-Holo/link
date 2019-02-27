@@ -16,13 +16,13 @@ import (
 const writeWind = 768 * 1024
 
 // Link impalement io.ReadWriteCloser.
-type Link struct {
+type link struct {
 	ID uint32
 
 	ctx          context.Context
 	ctxCloseFunc context.CancelFunc
 
-	manager *Manager
+	manager *manager
 
 	buf       *bytes.Buffer
 	bufSize   int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
@@ -44,8 +44,8 @@ type Link struct {
 
 // dial will create a Link, but the Link isn't created at other side,
 // user should write some data to let other side create the link.
-func dial(id uint32, m *Manager) *Link {
-	link := &Link{
+func dial(id uint32, m *manager) *link {
+	link := &link{
 		ID: id,
 
 		manager: m,
@@ -66,7 +66,7 @@ func dial(id uint32, m *Manager) *Link {
 }
 
 // readEventNotify notify link is readable
-func (l *Link) readEventNotify() {
+func (l *link) readEventNotify() {
 	select {
 	case l.readEvent <- struct{}{}:
 	default:
@@ -74,7 +74,7 @@ func (l *Link) readEventNotify() {
 }
 
 // writeEventNotify notify link is writable
-func (l *Link) writeEventNotify() {
+func (l *link) writeEventNotify() {
 	select {
 	case l.writeEvent <- struct{}{}:
 	default:
@@ -82,7 +82,7 @@ func (l *Link) writeEventNotify() {
 }
 
 // pushBytes push some data to link.buf.
-func (l *Link) pushBytes(p []byte) {
+func (l *link) pushBytes(p []byte) {
 	l.bufLock.Lock()
 	l.buf.Write(p)
 	l.bufLock.Unlock()
@@ -93,7 +93,7 @@ func (l *Link) pushBytes(p []byte) {
 
 // pushPacket when manager recv a packet about this link,
 // manager calls pushPacket to let link handles that packet.
-func (l *Link) pushPacket(p *Packet) {
+func (l *link) pushPacket(p *Packet) {
 	switch p.CMD {
 	case PSH:
 		l.pushBytes(p.Payload)
@@ -113,7 +113,7 @@ func (l *Link) pushPacket(p *Packet) {
 	}
 }
 
-func (l *Link) Read(p []byte) (n int, err error) {
+func (l *link) Read(p []byte) (n int, err error) {
 	l.readDLLock.RLock()
 	if !l.readDeadline.IsZero() && time.Now().After(l.readDeadline) {
 		l.readDLLock.RUnlock()
@@ -186,7 +186,7 @@ func (l *Link) Read(p []byte) (n int, err error) {
 	}
 }
 
-func (l *Link) Write(p []byte) (int, error) {
+func (l *link) Write(p []byte) (int, error) {
 	l.writeDLLock.RLock()
 	if !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline) {
 		l.writeDLLock.RUnlock()
@@ -234,7 +234,7 @@ func (l *Link) Write(p []byte) (int, error) {
 }
 
 // Close close the link.
-func (l *Link) Close() error {
+func (l *link) Close() error {
 	select {
 	case <-l.ctx.Done():
 		return nil
@@ -252,7 +252,7 @@ func (l *Link) Close() error {
 }
 
 // closeByPeer when link is closed by peer, closeByPeer will be called.
-func (l *Link) closeByPeer() {
+func (l *link) closeByPeer() {
 	select {
 	case <-l.ctx.Done():
 		return
@@ -264,7 +264,7 @@ func (l *Link) closeByPeer() {
 }
 
 // sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
-func (l *Link) sendACK(n int) {
+func (l *link) sendACK(n int) {
 	if n <= 65535 {
 		ack := make([]byte, 2)
 		binary.BigEndian.PutUint16(ack, uint16(n))
@@ -294,19 +294,19 @@ func (l *Link) sendACK(n int) {
 	}
 }
 
-func (l *Link) LocalAddr() net.Addr {
+func (l *link) LocalAddr() net.Addr {
 	return Addr{
 		ID: strconv.Itoa(int(l.ID)),
 	}
 }
 
-func (l *Link) RemoteAddr() net.Addr {
+func (l *link) RemoteAddr() net.Addr {
 	return Addr{
 		ID: strconv.Itoa(int(l.ID)),
 	}
 }
 
-func (l *Link) SetDeadline(t time.Time) error {
+func (l *link) SetDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
 		return ErrLinkClosed
@@ -327,7 +327,7 @@ func (l *Link) SetDeadline(t time.Time) error {
 	return nil
 }
 
-func (l *Link) SetReadDeadline(t time.Time) error {
+func (l *link) SetReadDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
 		return ErrLinkClosed
@@ -343,7 +343,7 @@ func (l *Link) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (l *Link) SetWriteDeadline(t time.Time) error {
+func (l *link) SetWriteDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
 		return ErrLinkClosed
