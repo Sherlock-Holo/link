@@ -2,12 +2,13 @@ package link
 
 import (
 	"context"
-	"errors"
-	"io"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 type writeRequest struct {
@@ -16,8 +17,8 @@ type writeRequest struct {
 }
 
 // Manager manager will manage some links.
-type Manager struct {
-	conn io.ReadWriteCloser
+type manager struct {
+	conn net.Conn
 
 	links sync.Map
 
@@ -29,22 +30,24 @@ type Manager struct {
 
 	writes chan writeRequest // write chan limit link don't write too quickly
 
-	acceptQueue chan *Link // accept queue, call Accept() will get a waiting link
+	acceptQueue chan *link // accept queue, call Accept() will get a waiting link
 
 	interval time.Duration // keepalive interval
 
 	timeoutTimer  *time.Timer // timer check if the manager is timeout
 	timeout       time.Duration
-	initTimerOnce int32 // make sure Timer init once
+	initTimerOnce sync.Once // make sure Timer init once
 
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
 
-	enableLog bool
+	debugLog bool
+
+	mode mode // manager run mode
 }
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
-func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
-	manager := &Manager{
+func NewManager(conn net.Conn, config Config) Manager {
+	manager := &manager{
 		conn: conn,
 
 		maxID:   -1,
@@ -55,20 +58,23 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 
 	manager.ctx, manager.ctxCloseFunc = context.WithCancel(context.Background())
 
-	if config == nil {
-		config = DefaultConfig()
-	}
+	manager.debugLog = config.DebugLog
 
-	manager.enableLog = config.EnableLog
+	manager.mode = config.Mode
 
-	manager.acceptQueue = make(chan *Link, config.AcceptQueueSize)
+	manager.acceptQueue = make(chan *link, config.AcceptQueueSize)
 
-	if config.KeepaliveInterval > 0 {
-		manager.interval = config.KeepaliveInterval
+	if manager.mode == ClientMode && manager.interval > 0 {
+		manager.initTimerOnce.Do(func() {
+			if config.KeepaliveInterval > 0 {
+				manager.interval = config.KeepaliveInterval
+				manager.timeout = 2 * manager.interval
 
-		manager.keepaliveTicker = time.NewTicker(config.KeepaliveInterval)
+				manager.keepaliveTicker = time.NewTicker(config.KeepaliveInterval)
 
-		go manager.keepAlive()
+				go manager.keepAlive()
+			}
+		})
 	}
 
 	go manager.readLoop()
@@ -92,14 +98,18 @@ func NewManager(conn io.ReadWriteCloser, config *Config) *Manager {
 }
 
 // keepAlive send PING packet to other side to keepalive.
-func (m *Manager) keepAlive() {
+func (m *manager) keepAlive() {
 	defer m.keepaliveTicker.Stop()
 
-	for range m.keepaliveTicker.C {
+	writePing := func() error {
 		ping := newPacket(127, PING, []byte{byte(m.interval.Seconds())})
-		if err := m.writePacket(ping); err != nil {
-			if m.enableLog {
-				log.Println("send ping failed", err)
+		return m.writePacket(ping)
+	}
+
+	for range m.keepaliveTicker.C {
+		if err := writePing(); err != nil {
+			if m.debugLog {
+				log.Printf("send ping failed: %+v", err)
 			}
 			return
 		}
@@ -107,12 +117,12 @@ func (m *Manager) keepAlive() {
 }
 
 // readPacket read a packet from the underlayer conn.
-func (m *Manager) readPacket() (*Packet, error) {
+func (m *manager) readPacket() (*Packet, error) {
 	return decodeFrom(m.conn)
 }
 
 // writePacket write a packet to other side over the underlayer conn.
-func (m *Manager) writePacket(p *Packet) error {
+func (m *manager) writePacket(p *Packet) error {
 	req := writeRequest{
 		packet:  p,
 		written: make(chan struct{}),
@@ -133,7 +143,7 @@ func (m *Manager) writePacket(p *Packet) error {
 }
 
 // Close close the manager and close all links belong to this manager.
-func (m *Manager) Close() (err error) {
+func (m *manager) Close() (err error) {
 	select {
 	case <-m.ctx.Done():
 		return
@@ -142,7 +152,7 @@ func (m *Manager) Close() (err error) {
 	}
 
 	m.links.Range(func(_, value interface{}) bool {
-		value.(*Link).closeByPeer()
+		value.(*link).closeByPeer()
 		return true
 	})
 
@@ -154,20 +164,16 @@ func (m *Manager) Close() (err error) {
 		}
 	}
 
-	if m.timeoutTimer != nil {
-		m.timeoutTimer.Stop()
-	}
-
-	return m.conn.Close()
+	return errors.WithStack(m.conn.Close())
 }
 
 // removeLink recv FIN and send FIN will remove link.
-func (m *Manager) removeLink(id uint32) {
+func (m *manager) removeLink(id uint32) {
 	m.links.Delete(id)
 }
 
 // readLoop read packet forever until manager is closed.
-func (m *Manager) readLoop() {
+func (m *manager) readLoop() {
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -175,21 +181,29 @@ func (m *Manager) readLoop() {
 		default:
 		}
 
+		if m.timeout > 0 {
+			if err := m.conn.SetReadDeadline(time.Now().Add(m.timeout)); err != nil {
+				if m.debugLog {
+					log.Printf("set read dealine failed: %+v", errors.WithStack(err))
+				}
+				m.Close()
+				return
+			}
+		}
+
 		packet, err := m.readPacket()
 		if err != nil {
+			if m.debugLog {
+				log.Printf("read packet failed: %+v", err)
+			}
 			m.Close()
 			return
 		}
 
-		if m.timeoutTimer != nil {
-			m.timeoutTimer.Stop()
-			m.timeoutTimer.Reset(m.timeout)
-		}
-
 		switch packet.CMD {
 		case PSH:
-			if link, ok := m.links.Load(packet.ID); ok {
-				link.(*Link).pushPacket(packet)
+			if l, ok := m.links.Load(packet.ID); ok {
+				l.(*link).pushPacket(packet)
 			} else {
 				// check id is used or not,
 				// make sure don't miss id and don't reopen a closed link.
@@ -205,35 +219,24 @@ func (m *Manager) readLoop() {
 			}
 
 		case ACK, CLOSE:
-			if link, ok := m.links.Load(packet.ID); ok {
-				link.(*Link).pushPacket(packet)
+			if l, ok := m.links.Load(packet.ID); ok {
+				l.(*link).pushPacket(packet)
 			}
 
 		case PING:
-			timeout := 2 * time.Duration(packet.Payload[0]) * time.Second
-			m.timeout = timeout
+			m.initTimerOnce.Do(func() {
+				m.interval = time.Duration(packet.Payload[0]) * time.Second
+				m.timeout = 2 * m.interval
 
-			if atomic.CompareAndSwapInt32(&m.initTimerOnce, 0, 1) {
-				m.timeoutTimer = time.AfterFunc(timeout, func() {
-					if m.enableLog {
-						log.Println("manager timeout")
-					}
-					m.Close()
-				})
-
-				if m.enableLog {
-					log.Println("init manager timer")
-				}
-			}
-
-			m.timeoutTimer.Stop()
-			m.timeoutTimer.Reset(timeout)
+				m.keepaliveTicker = time.NewTicker(m.interval)
+				go m.keepAlive()
+			})
 		}
 	}
 }
 
 // writeLoop write packet to other side forever until manager is closed.
-func (m *Manager) writeLoop() {
+func (m *manager) writeLoop() {
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -241,7 +244,7 @@ func (m *Manager) writeLoop() {
 		case req := <-m.writes:
 			bytes := req.packet.bytes()
 			if _, err := m.conn.Write(bytes); err != nil {
-				if m.enableLog {
+				if m.debugLog {
 					log.Println("manager writeLoop:", err)
 				}
 				m.Close()
@@ -255,8 +258,8 @@ func (m *Manager) writeLoop() {
 }
 
 // Dial create a Link, if manager is closed, err != nil.
-func (m *Manager) Dial() (link *Link, err error) {
-	link = dial(uint32(atomic.AddInt32(&m.maxID, 1)), m)
+func (m *manager) Dial() (Link, error) {
+	link := dial(uint32(atomic.AddInt32(&m.maxID, 1)), m)
 
 	select {
 	case <-m.ctx.Done():
@@ -268,7 +271,7 @@ func (m *Manager) Dial() (link *Link, err error) {
 }
 
 // Accept accept a new Link, if manager is closed, err != nil.
-func (m *Manager) Accept() (link *Link, err error) {
+func (m *manager) Accept() (link Link, err error) {
 	select {
 	case <-m.ctx.Done():
 		return nil, errors.New("broken manager")
@@ -278,7 +281,7 @@ func (m *Manager) Accept() (link *Link, err error) {
 }
 
 // IsClosed return if the manager closed or not.
-func (m *Manager) IsClosed() bool {
+func (m *manager) IsClosed() bool {
 	select {
 	case <-m.ctx.Done():
 		return true
