@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 
 	"github.com/pkg/errors"
 )
@@ -151,7 +152,7 @@ func (p *Packet) bytes() []byte {
 }
 
 // decode decode a packet from []byte.
-func decodeFrom(r io.Reader) (*Packet, error) {
+func decodeFrom(r net.Conn) (*Packet, error) {
 	b := make([]byte, HeaderWithoutPayloadLength+1)
 
 	if _, err := io.ReadFull(r, b); err != nil {
