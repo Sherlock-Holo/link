@@ -12,7 +12,7 @@ import (
 type Cmd = uint8
 
 const (
-	Version = 3
+	Version = 4
 
 	VersionLength = 1
 	IDLength      = 4
