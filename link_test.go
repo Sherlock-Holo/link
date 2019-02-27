@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/akutz/memconn"
+	"github.com/pkg/errors"
 )
 
 func initTest(t *testing.T, addr string) (client net.Conn, server net.Conn) {
 	listener, err := memconn.Listen("memb", addr)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("listen memconn failed: %+v", errors.WithStack(err))
 	}
 
 	wg := sync.WaitGroup{}
@@ -22,7 +23,7 @@ func initTest(t *testing.T, addr string) (client net.Conn, server net.Conn) {
 		var err error
 		client, err = memconn.Dial("memb", addr)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("menconn dial failed: %+v", errors.WithStack(err))
 		}
 		wg.Done()
 	}()
@@ -32,7 +33,7 @@ func initTest(t *testing.T, addr string) (client net.Conn, server net.Conn) {
 		var err error
 		server, err = listener.Accept()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("menconn listener accept failed: %+v", errors.WithStack(err))
 		}
 		wg.Done()
 	}()
@@ -49,40 +50,45 @@ func TestLinkClientToServer(t *testing.T) {
 		server.Close()
 	}()
 
-	config := DefaultConfig()
-	clientManager := NewManager(client, config)
-	serverManager := NewManager(server, nil)
+	clientCfg := DefaultConfig(ClientMode)
+	clientCfg.DebugLog = false
+
+	serverCfg := DefaultConfig(ServerMode)
+	serverCfg.DebugLog = false
+
+	clientManager := NewManager(client, clientCfg)
+	serverManager := NewManager(server, serverCfg)
 
 	fileB, err := ioutil.ReadFile("testdata/more-than-65535")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read fileB failed: %+v", errors.WithStack(err))
 	}
 
 	go func() {
 		link, err := clientManager.Dial()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("client dial failed: %+v", err)
 		}
 		defer link.Close()
 
 		if _, err := link.Write(fileB); err != nil {
-			t.Fatal(err)
+			t.Fatalf("client write fileB failed: %+v", err)
 		}
 	}()
 
 	link, err := serverManager.Accept()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("server accept failed: %+v", err)
 	}
 	defer link.Close()
 
 	b, err := ioutil.ReadAll(link)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("server read b failed: %+v", errors.WithStack(err))
 	}
 
 	if string(b) != string(fileB) {
-		t.Log("failed")
+		t.Fatal("data verify failed")
 	}
 }
 
@@ -93,50 +99,55 @@ func TestLinkServerToClient(t *testing.T) {
 		server.Close()
 	}()
 
-	config := DefaultConfig()
-	clientManager := NewManager(client, config)
-	serverManager := NewManager(server, nil)
+	clientCfg := DefaultConfig(ClientMode)
+	clientCfg.DebugLog = false
+
+	serverCfg := DefaultConfig(ServerMode)
+	serverCfg.DebugLog = false
+
+	clientManager := NewManager(client, clientCfg)
+	serverManager := NewManager(server, serverCfg)
 
 	fileB, err := ioutil.ReadFile("testdata/more-than-65535")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read fileB failed: %+v", errors.WithStack(err))
 	}
 
 	go func() {
 		link, err := serverManager.Accept()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("server accept failed: %+v", err)
 		}
 		defer link.Close()
 
 		// need to run before Write, read the byte which client written
 		if _, err := link.Read(make([]byte, 1)); err != nil {
-			t.Fatal(err)
+			t.Fatalf("server read init data failed: %+v", err)
 		}
 
 		if _, err := link.Write(fileB); err != nil {
-			t.Fatal(err)
+			t.Fatalf("server write fileB failed: %+v", err)
 		}
 
 	}()
 
 	link, err := clientManager.Dial()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("client dial failed: %+v", err)
 	}
 	defer link.Close()
 
 	// need to run before ReadAll, ensure server know client wants to create a link
 	if _, err := link.Write([]byte{1}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("client write init data failed: %+v", err)
 	}
 
 	b, err := ioutil.ReadAll(link)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("client read b failed: %+v", errors.WithStack(err))
 	}
 
 	if string(b) != string(fileB) {
-		t.Log("failed")
+		t.Fatal("data verify failed")
 	}
 }

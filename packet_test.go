@@ -1,12 +1,52 @@
 package link
 
 import (
-	"io"
+	"github.com/pkg/errors"
 	"io/ioutil"
+	"net"
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
+
+type testConn struct {
+	file *os.File
+}
+
+func (tc *testConn) Read(b []byte) (n int, err error) {
+	n, err = tc.file.Read(b)
+	err = errors.WithStack(err)
+	return
+}
+
+func (tc *testConn) Write(b []byte) (n int, err error) {
+	panic("implement me")
+}
+
+func (tc *testConn) Close() error {
+	return errors.WithStack(tc.file.Close())
+}
+
+func (tc *testConn) LocalAddr() net.Addr {
+	panic("implement me")
+}
+
+func (tc *testConn) RemoteAddr() net.Addr {
+	panic("implement me")
+}
+
+func (tc *testConn) SetDeadline(t time.Time) error {
+	panic("implement me")
+}
+
+func (tc *testConn) SetReadDeadline(t time.Time) error {
+	panic("implement me")
+}
+
+func (tc *testConn) SetWriteDeadline(t time.Time) error {
+	panic("implement me")
+}
 
 func Test_newPacket(t *testing.T) {
 	type args struct {
@@ -50,13 +90,13 @@ func Test_newPacket(t *testing.T) {
 					cmd     uint8
 					payload []byte
 				}{
-					id:      PSH,
+					id:      uint32(PSH),
 					cmd:     PSH,
 					payload: b,
 				},
 				want: &Packet{
 					Version:             Version,
-					ID:                  PSH,
+					ID:                  uint32(PSH),
 					CMD:                 PSH,
 					shortPayloadLength:  uint8(info.short),
 					middlePayloadLength: uint16(info.middle),
@@ -73,13 +113,13 @@ func Test_newPacket(t *testing.T) {
 					cmd     uint8
 					payload []byte
 				}{
-					id:      ACK,
+					id:      uint32(ACK),
 					cmd:     ACK,
 					payload: b,
 				},
 				want: &Packet{
 					Version:             Version,
-					ID:                  ACK,
+					ID:                  uint32(ACK),
 					CMD:                 ACK,
 					shortPayloadLength:  uint8(info.short),
 					middlePayloadLength: uint16(info.middle),
@@ -96,13 +136,13 @@ func Test_newPacket(t *testing.T) {
 					cmd     uint8
 					payload []byte
 				}{
-					id:      CLOSE,
+					id:      uint32(CLOSE),
 					cmd:     CLOSE,
 					payload: b,
 				},
 				want: &Packet{
 					Version:             Version,
-					ID:                  CLOSE,
+					ID:                  uint32(CLOSE),
 					CMD:                 CLOSE,
 					shortPayloadLength:  uint8(info.short),
 					middlePayloadLength: uint16(info.middle),
@@ -119,13 +159,13 @@ func Test_newPacket(t *testing.T) {
 					cmd     uint8
 					payload []byte
 				}{
-					id:      PING,
+					id:      uint32(PING),
 					cmd:     PING,
 					payload: b,
 				},
 				want: &Packet{
 					Version:             Version,
-					ID:                  PING,
+					ID:                  uint32(PING),
 					CMD:                 PING,
 					shortPayloadLength:  uint8(info.short),
 					middlePayloadLength: uint16(info.middle),
@@ -149,7 +189,7 @@ func Test_newPacket(t *testing.T) {
 
 func Test_decodeFrom(t *testing.T) {
 	type args struct {
-		r io.Reader
+		r net.Conn
 	}
 	var tests []struct {
 		name    string
@@ -170,7 +210,7 @@ func Test_decodeFrom(t *testing.T) {
 		wantErr bool
 	}{
 		name: "packet-binary-less-254",
-		args: struct{ r io.Reader }{r: packetBinaryLess254},
+		args: struct{ r net.Conn }{r: &testConn{packetBinaryLess254}},
 		want: &Packet{
 			Version:            Version,
 			ID:                 128,
