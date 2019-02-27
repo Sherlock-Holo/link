@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"testing/iotest"
 	"time"
 )
 
-const writeWind = 768 * 1024
+const (
+	bufSize          = 768 * 1024
+	ackPayloadLength = 2
+)
 
 // Link impalement io.ReadWriteCloser.
 type link struct {
@@ -27,7 +30,7 @@ type link struct {
 	buf       *bytes.Buffer
 	bufSize   int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
 	bufLock   sync.Mutex
-	readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read will notify it by call readEventNotify
+	readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read may notify it by call readAvailable
 
 	// when writeWind < 0, Link.Write will be blocked
 	writeWind  int32
@@ -36,8 +39,8 @@ type link struct {
 	// rst int32
 	eof sync.Once
 
-	readDLLock    sync.RWMutex
-	writeDLLock   sync.RWMutex
+	readDLLock    sync.Mutex
+	writeDLLock   sync.Mutex
 	readDeadline  time.Time
 	writeDeadline time.Time
 }
@@ -50,31 +53,31 @@ func dial(id uint32, m *manager) *link {
 
 		manager: m,
 
-		buf: bytes.NewBuffer(make([]byte, 0, 1024*16)),
+		buf: bytes.NewBuffer(make([]byte, 0, bufSize)),
 
 		readEvent: make(chan struct{}, 1),
 
-		writeWind:  writeWind,
+		writeWind:  bufSize,
 		writeEvent: make(chan struct{}, 1),
 	}
 
 	link.ctx, link.ctxCloseFunc = context.WithCancel(m.ctx)
 
-	link.writeEventNotify()
+	link.writeAvailable()
 
 	return link
 }
 
-// readEventNotify notify link is readable
-func (l *link) readEventNotify() {
+// readAvailable notify link is readable
+func (l *link) readAvailable() {
 	select {
 	case l.readEvent <- struct{}{}:
 	default:
 	}
 }
 
-// writeEventNotify notify link is writable
-func (l *link) writeEventNotify() {
+// writeAvailable notify link is writable
+func (l *link) writeAvailable() {
 	select {
 	case l.writeEvent <- struct{}{}:
 	default:
@@ -88,7 +91,7 @@ func (l *link) pushBytes(p []byte) {
 	l.bufLock.Unlock()
 
 	atomic.AddInt32(&l.bufSize, int32(len(p)))
-	l.readEventNotify()
+	l.readAvailable()
 }
 
 // pushPacket when manager recv a packet about this link,
@@ -100,12 +103,12 @@ func (l *link) pushPacket(p *Packet) {
 
 	case ACK:
 		// if ACK packet has error payload, it will be ignored.
-		if p.PayloadLength != 2 {
+		if p.PayloadLength != ackPayloadLength {
 			return
 		}
 
 		if atomic.AddInt32(&l.writeWind, int32(binary.BigEndian.Uint16(p.Payload))) > 0 {
-			l.writeEventNotify()
+			l.writeAvailable()
 		}
 
 	case CLOSE:
@@ -114,16 +117,16 @@ func (l *link) pushPacket(p *Packet) {
 }
 
 func (l *link) Read(p []byte) (n int, err error) {
-	l.readDLLock.RLock()
-	if !l.readDeadline.IsZero() && time.Now().After(l.readDeadline) {
-		l.readDLLock.RUnlock()
-		return 0, iotest.ErrTimeout
-	} else {
-		l.readDLLock.RUnlock()
+	l.readDLLock.Lock()
+	timeout := !l.readDeadline.IsZero() && time.Now().After(l.readDeadline)
+	l.readDLLock.Unlock()
+	if timeout {
+		return 0, ErrTimeout
 	}
 
+	// we should not pass a 0 length buffer into Read(p []byte), if so will always return (0, nil)
 	if len(p) == 0 {
-		select {
+		/*select {
 		case <-l.ctx.Done():
 			if atomic.LoadInt32(&l.bufSize) > 0 {
 				return 0, nil
@@ -144,7 +147,8 @@ func (l *link) Read(p []byte) (n int, err error) {
 
 		default:
 			return 0, nil
-		}
+		}*/
+		return 0, nil
 	}
 
 	for {
@@ -165,6 +169,18 @@ func (l *link) Read(p []byte) (n int, err error) {
 			return
 		}
 
+		l.readDLLock.Lock()
+		var readDeadline time.Time
+		if !l.readDeadline.IsZero() {
+			readDeadline = l.readDeadline
+		}
+		l.readDLLock.Unlock()
+
+		timeoutCtx := context.Background()
+		if !readDeadline.IsZero() {
+			timeoutCtx, _ = context.WithTimeout(context.Background(), readDeadline.Sub(time.Now()))
+		}
+
 		select {
 		case <-l.ctx.Done():
 			err = io.ErrClosedPipe
@@ -182,21 +198,31 @@ func (l *link) Read(p []byte) (n int, err error) {
 			return
 
 		case <-l.readEvent:
+		// wait for peer writing data
+
+		case <-timeoutCtx.Done():
+			return 0, ErrTimeout
 		}
 	}
 }
 
 func (l *link) Write(p []byte) (int, error) {
-	l.writeDLLock.RLock()
-	if !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline) {
+	l.writeDLLock.Lock()
+	timeout := !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline)
+	l.writeDLLock.Unlock()
+	if timeout {
+		return 0, ErrTimeout
+	}
+	/*if !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline) {
 		l.writeDLLock.RUnlock()
 		return 0, iotest.ErrTimeout
 	} else {
 		l.writeDLLock.RUnlock()
-	}
+	}*/
 
+	// we should not pass a 0 length buffer into Write(p []byte), if so will always return (0, nil)
 	if len(p) == 0 {
-		select {
+		/*select {
 		case <-l.ctx.Done():
 			select {
 			case <-l.manager.ctx.Done():
@@ -207,7 +233,8 @@ func (l *link) Write(p []byte) (int, error) {
 			return 0, io.ErrClosedPipe
 		default:
 			return 0, nil
-		}
+		}*/
+		return 0, nil
 	}
 
 	select {
@@ -226,7 +253,7 @@ func (l *link) Write(p []byte) (int, error) {
 		}
 
 		if atomic.AddInt32(&l.writeWind, -int32(len(p))) > 0 {
-			l.writeEventNotify()
+			l.writeAvailable()
 		}
 
 		return len(p), nil
@@ -265,32 +292,21 @@ func (l *link) closeByPeer() {
 
 // sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
 func (l *link) sendACK(n int) {
-	if n <= 65535 {
-		ack := make([]byte, 2)
-		binary.BigEndian.PutUint16(ack, uint16(n))
-		l.manager.writePacket(newPacket(l.ID, ACK, ack))
+	ack := make([]byte, 2)
 
-	} else {
-		var acks [][]byte
-		for {
-			ack := make([]byte, 2)
-			binary.BigEndian.PutUint16(ack, uint16(65535))
-			acks = append(acks, ack)
-
-			n -= 65535
-			if n <= 65535 {
-				lastAck := make([]byte, 2)
-				binary.BigEndian.PutUint16(ack, uint16(n))
-				acks = append(acks, lastAck)
-				break
-			}
+	if n > math.MaxUint16 {
+		binary.BigEndian.PutUint16(ack, math.MaxUint16)
+		if err := l.manager.writePacket(newPacket(l.ID, ACK, ack)); err != nil {
+			return
 		}
 
-		for _, ack := range acks {
-			if err := l.manager.writePacket(newPacket(l.ID, ACK, ack)); err != nil {
-				return
-			}
-		}
+		l.sendACK(n - math.MaxUint16)
+		return
+	}
+
+	binary.BigEndian.PutUint16(ack, uint16(n))
+	if err := l.manager.writePacket(newPacket(l.ID, ACK, ack)); err != nil {
+		return
 	}
 }
 
