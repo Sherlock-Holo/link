@@ -1,21 +1,23 @@
 package link
 
 import (
-	"github.com/pkg/errors"
+	"bytes"
+	"encoding/binary"
 	"io/ioutil"
 	"net"
-	"os"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 type testConn struct {
-	file *os.File
+	r *bytes.Reader
 }
 
 func (tc *testConn) Read(b []byte) (n int, err error) {
-	n, err = tc.file.Read(b)
+	n, err = tc.r.Read(b)
 	err = errors.WithStack(err)
 	return
 }
@@ -25,7 +27,7 @@ func (tc *testConn) Write(b []byte) (n int, err error) {
 }
 
 func (tc *testConn) Close() error {
-	return errors.WithStack(tc.file.Close())
+	return nil
 }
 
 func (tc *testConn) LocalAddr() net.Addr {
@@ -174,6 +176,29 @@ func Test_newPacket(t *testing.T) {
 					Payload:             b,
 				},
 			},
+
+			{
+				name: "NEW " + testdataFile,
+				args: struct {
+					id      uint32
+					cmd     uint8
+					payload []byte
+				}{
+					id:      uint32(NEW),
+					cmd:     NEW,
+					payload: nil,
+				},
+				want: &Packet{
+					Version:             Version,
+					ID:                  uint32(NEW),
+					CMD:                 NEW,
+					shortPayloadLength:  0,
+					middlePayloadLength: 0,
+					longPayloadLength:   0,
+					PayloadLength:       0,
+					Payload:             nil,
+				},
+			},
 		}...,
 		)
 	}
@@ -198,10 +223,12 @@ func Test_decodeFrom(t *testing.T) {
 		wantErr bool
 	}
 
-	packetBinaryLess254, err := os.Open("testdata/binary/packet-binary-less-254")
+	packetBinaryLess254, err := ioutil.ReadFile("testdata/binary/packet-binary-less-254")
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	packet := newPacket(uint32(PSH), PSH, packetBinaryLess254)
 
 	tests = append(tests, struct {
 		name    string
@@ -209,16 +236,9 @@ func Test_decodeFrom(t *testing.T) {
 		want    *Packet
 		wantErr bool
 	}{
-		name: "packet-binary-less-254",
-		args: struct{ r net.Conn }{r: &testConn{packetBinaryLess254}},
-		want: &Packet{
-			Version:            Version,
-			ID:                 128,
-			CMD:                PSH,
-			shortPayloadLength: 1,
-			PayloadLength:      1,
-			Payload:            []byte{1},
-		},
+		name:    "packet-binary-less-254",
+		args:    struct{ r net.Conn }{r: &testConn{bytes.NewReader(packet.bytes())}},
+		want:    packet,
 		wantErr: false,
 	})
 
@@ -226,8 +246,7 @@ func Test_decodeFrom(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := decodeFrom(tt.args.r)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("decodeFrom() error = %v, wantErr %v", err, tt.wantErr)
-				return
+				t.Fatalf("decodeFrom() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("decodeFrom() = %v, want %v", got, tt.want)
@@ -241,6 +260,13 @@ func TestPacket_bytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	pb := make([]byte, HeaderWithoutPayloadLength+1, HeaderWithoutPayloadLength+1+len(b))
+	pb[0] = Version
+	binary.BigEndian.PutUint32(pb[1:1+IDLength], 128)
+	pb[5] = PSH
+	pb[HeaderWithoutPayloadLength] = byte(len(b))
+	pb = append(pb, b...)
 
 	type fields struct {
 		Version             uint8
@@ -272,11 +298,11 @@ func TestPacket_bytes(t *testing.T) {
 				Version:            Version,
 				ID:                 128,
 				CMD:                PSH,
-				shortPayloadLength: 1,
-				PayloadLength:      1,
-				Payload:            []byte{1},
+				shortPayloadLength: uint8(len(b)),
+				PayloadLength:      len(b),
+				Payload:            b,
 			},
-			want: b,
+			want: pb,
 		},
 	}
 	for _, tt := range tests {

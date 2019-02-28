@@ -12,7 +12,7 @@ import (
 type Cmd = uint8
 
 const (
-	Version = 4
+	Version = 5
 
 	VersionLength = 1
 	IDLength      = 4
@@ -24,6 +24,7 @@ const (
 	CLOSE Cmd = 1 << 6
 	PING  Cmd = 1 << 5
 	ACK   Cmd = 1 << 4 // 2 bytes data, uint16, the other side has read [uint16] bytes data
+	NEW   Cmd = 1 << 3 // can take some data to reduce dial time
 )
 
 // header[VersionLength + IDLength + CMDLength + indefinite length bytes] [payload]
@@ -37,6 +38,7 @@ type Packet struct {
 	// CLOSE  0b0100,0000
 	// PING   0b0010,0000
 	// ACK    0b0001,0000
+	// NEW    0b0000,1000
 	// RSV    0b0000,0000
 	CMD Cmd
 
@@ -58,18 +60,7 @@ func newPacket(id uint32, cmd Cmd, payload []byte) *Packet {
 	}
 
 	switch cmd {
-	/*case PSH:
-		packet.CMD = PSH
-
-	case CLOSE:
-		packet.CMD = CLOSE
-
-	case PING:
-		packet.CMD = PING
-
-	case ACK:
-		packet.CMD = ACK*/
-	case PSH, CLOSE, PING, ACK:
+	case PSH, CLOSE, PING, ACK, NEW:
 		packet.CMD = cmd
 
 	default:
@@ -114,21 +105,6 @@ func (p *Packet) bytes() []byte {
 	b[0] = p.Version
 	binary.BigEndian.PutUint32(b[1:1+IDLength], p.ID)
 
-	/*var cmdByte uint8
-
-	switch p.CMD {
-	case PSH:
-		cmdByte |= 1 << 7
-
-	case CLOSE:
-		cmdByte |= 1 << 6
-
-	case PING:
-		cmdByte |= 1 << 5
-
-	case ACK:
-		cmdByte |= 1 << 4
-	}*/
 	cmdByte := p.CMD
 
 	b[5] = cmdByte
@@ -177,23 +153,8 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 
 	cmdByte := b[5]
 
-	/*if cmdByte&(1<<7) != 0 {
-		p.CMD = PSH
-	}
-
-	if cmdByte&(1<<6) != 0 {
-		p.CMD = CLOSE
-	}
-
-	if cmdByte&(1<<5) != 0 {
-		p.CMD = PING
-	}
-
-	if cmdByte&(1<<4) != 0 {
-		p.CMD = ACK
-	}*/
 	switch cmdByte {
-	case PSH, CLOSE, PING, ACK:
+	case PSH, CLOSE, PING, ACK, NEW:
 		p.CMD = cmdByte
 
 	default:
