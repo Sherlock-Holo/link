@@ -8,8 +8,8 @@ const (
 	ClientMode mode = iota
 	ServerMode
 
-	defaultReadBufSize  = 64 * 1024
-	defaultWriteBufSize = 64 * 1024
+	defaultReadBufSize = 64 * 1024 // can buf data size
+	// defaultWriteBufSize = 64 * 1024
 )
 
 // Config manager config.
@@ -20,7 +20,6 @@ type Config struct {
 	DebugLog          bool // enable debug log
 	Mode              mode // manager run mode
 	ReadBufSize       int32
-	WriteBufSize      int32
 }
 
 // DefaultConfig default config.
@@ -31,7 +30,6 @@ func DefaultConfig(mode mode) Config {
 		DebugLog:        false,
 		Mode:            mode,
 		ReadBufSize:     defaultReadBufSize,
-		WriteBufSize:    defaultWriteBufSize,
 	}
 }
 

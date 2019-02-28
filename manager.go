@@ -2,6 +2,7 @@ package link
 
 import (
 	"context"
+	"encoding/binary"
 	"log"
 	"net"
 	"sync"
@@ -204,7 +205,7 @@ func (m *manager) readLoop() {
 				m.acceptQueue <- link
 			}
 
-		case PSH, ACK, CLOSE:
+		case PSH, ACK, CLOSE, ACPT:
 			if l, ok := m.links.Load(packet.ID); ok {
 				l.(*link).pushPacket(packet)
 			}
@@ -257,7 +258,14 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 	default:
 		m.links.Store(link.ID, link)
 
-		newP := newPacket(link.ID, NEW, b)
+		// tell readableBufSize
+		buf := make([]byte, 4+len(b))
+		binary.BigEndian.PutUint32(buf, uint32(m.cfg.ReadBufSize))
+
+		// write optional data
+		copy(buf[4:], b)
+
+		newP := newPacket(link.ID, NEW, buf)
 		if err := m.writePacket(newP); err != nil {
 			return nil, err
 		}
@@ -287,7 +295,14 @@ func (m *manager) Accept() (Link, error) {
 		return nil, ErrManagerClosed
 
 	case l = <-m.acceptQueue:
-		ackNewPacket := newPacket(l.ID, ACK, nil)
+		readableBufSize := make([]byte, 4)
+		size := atomic.LoadInt32(&l.bufSize)
+		if size < 0 {
+			size = 0
+		}
+		binary.BigEndian.PutUint32(readableBufSize, uint32(size))
+
+		ackNewPacket := newPacket(l.ID, ACPT, readableBufSize)
 		if err := m.writePacket(ackNewPacket); err != nil {
 			return nil, err
 		}

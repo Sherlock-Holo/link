@@ -52,9 +52,9 @@ func TestLinkClientToServer(t *testing.T) {
 	}()
 
 	clientCfg := DefaultConfig(ClientMode)
-	clientCfg.DebugLog = true
+	// clientCfg.DebugLog = true
 	serverCfg := DefaultConfig(ServerMode)
-	serverCfg.DebugLog = true
+	// serverCfg.DebugLog = true
 
 	clientManager := NewManager(client, clientCfg)
 	serverManager := NewManager(server, serverCfg)
@@ -88,7 +88,7 @@ func TestLinkClientToServer(t *testing.T) {
 	}
 
 	if string(b) != string(fileB) {
-		t.Fatalf("data verify failed, receive:\n%s\n want:\n%s", string(b), string(fileB))
+		t.Fatalf("data verify failed, receive:\n%s\n\n\n\n\nwant:\n%s", string(b), string(fileB))
 	}
 }
 

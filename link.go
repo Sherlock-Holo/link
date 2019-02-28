@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -14,7 +13,7 @@ import (
 )
 
 const (
-	ackPayloadLength = 2
+	ackPayloadLength = 4
 )
 
 // Link impalement io.ReadWriteCloser.
@@ -55,9 +54,7 @@ func newLink(id uint32, m *manager, mode mode) *link {
 
 		buf: bytes.NewBuffer(make([]byte, 0, m.cfg.ReadBufSize)),
 
-		readEvent: make(chan struct{}, 1),
-
-		writeWind:  m.cfg.WriteBufSize,
+		readEvent:  make(chan struct{}, 1),
 		writeEvent: make(chan struct{}, 1),
 	}
 
@@ -109,26 +106,30 @@ func (l *link) pushBytes(p []byte) {
 // manager calls pushPacket to let link handles that packet.
 func (l *link) pushPacket(p *Packet) {
 	switch p.CMD {
-	case PSH, NEW:
+	case PSH:
 		l.pushBytes(p.Payload)
 
-	case ACK:
-		// dial ok
-		if l.dialCtx != nil {
-			l.dialCtxFunc()
-		}
+	case NEW:
+		atomic.StoreInt32(&l.writeWind, int32(binary.BigEndian.Uint32(p.Payload[:4])))
+		l.pushBytes(p.Payload[4:])
 
-		// if ACK packet has error payload, it will be ignored.
+	case ACK:
+		/*// if ACK packet has error payload, it will be ignored.
 		if p.PayloadLength != ackPayloadLength {
 			return
-		}
+		}*/
 
-		if atomic.AddInt32(&l.writeWind, int32(binary.BigEndian.Uint16(p.Payload))) > 0 {
+		atomic.StoreInt32(&l.writeWind, int32(binary.BigEndian.Uint32(p.Payload)))
+		if atomic.LoadInt32(&l.writeWind) > 0 {
 			l.writeAvailable()
 		}
 
 	case CLOSE:
 		l.closeByPeer()
+
+	case ACPT:
+		l.dialCtxFunc()
+		atomic.StoreInt32(&l.writeWind, int32(binary.BigEndian.Uint32(p.Payload)))
 	}
 }
 
@@ -155,7 +156,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 			case <-l.ctx.Done():
 				// when link is closed, peer doesn't care about the ack because it won't send any packets again
 			default:
-				go l.sendACK(n)
+				go l.sendACK()
 			}
 
 			return
@@ -250,35 +251,19 @@ func (l *link) Close() error {
 
 // closeByPeer when link is closed by peer, closeByPeer will be called.
 func (l *link) closeByPeer() {
-	/*select {
-	case <-l.ctx.Done():
-		return
-	default:
-		l.ctxCloseFunc()
-	}*/
-
 	l.ctxCloseFunc()
 	l.manager.removeLink(l.ID)
 }
 
 // sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
-func (l *link) sendACK(n int) {
-	ack := make([]byte, 2)
-
-	if n > math.MaxUint16 {
-		binary.BigEndian.PutUint16(ack, math.MaxUint16)
-		if err := l.manager.writePacket(newPacket(l.ID, ACK, ack)); err != nil {
-			return
-		}
-
-		l.sendACK(n - math.MaxUint16)
-		return
+func (l *link) sendACK() {
+	buf := make([]byte, ackPayloadLength)
+	size := atomic.LoadInt32(&l.bufSize)
+	if size < 0 {
+		size = 0
 	}
-
-	binary.BigEndian.PutUint16(ack, uint16(n))
-	if err := l.manager.writePacket(newPacket(l.ID, ACK, ack)); err != nil {
-		return
-	}
+	binary.BigEndian.PutUint32(buf, uint32(size))
+	l.manager.writePacket(newPacket(l.ID, ACK, buf))
 }
 
 func (l *link) LocalAddr() net.Addr {

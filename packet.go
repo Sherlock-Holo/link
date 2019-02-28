@@ -12,7 +12,7 @@ import (
 type Cmd = uint8
 
 const (
-	Version = 5
+	Version = 6
 
 	VersionLength = 1
 	IDLength      = 4
@@ -23,8 +23,9 @@ const (
 	PSH   Cmd = 1 << 7
 	CLOSE Cmd = 1 << 6
 	PING  Cmd = 1 << 5
-	ACK   Cmd = 1 << 4 // 2 bytes data, uint16, the other side has read [uint16] bytes data
-	NEW   Cmd = 1 << 3 // can take some data to reduce dial time
+	ACK   Cmd = 1 << 4 // [4 bytes data readableBufSize] tell peer the readable size
+	NEW   Cmd = 1 << 3 // can take some data to reduce dial time, [4 bytes readableBufSize + optional data]
+	ACPT  Cmd = 1 << 2 // take [4 bytes readableBufSize]
 )
 
 // header[VersionLength + IDLength + CMDLength + indefinite length bytes] [payload]
@@ -39,6 +40,7 @@ type Packet struct {
 	// PING   0b0010,0000
 	// ACK    0b0001,0000
 	// NEW    0b0000,1000
+	// ACPT   0b0000,0100
 	// RSV    0b0000,0000
 	CMD Cmd
 
@@ -60,7 +62,7 @@ func newPacket(id uint32, cmd Cmd, payload []byte) *Packet {
 	}
 
 	switch cmd {
-	case PSH, CLOSE, PING, ACK, NEW:
+	case PSH, CLOSE, PING, ACK, NEW, ACPT:
 		packet.CMD = cmd
 
 	default:
@@ -154,7 +156,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	cmdByte := b[5]
 
 	switch cmdByte {
-	case PSH, CLOSE, PING, ACK, NEW:
+	case PSH, CLOSE, PING, ACK, NEW, ACPT:
 		p.CMD = cmdByte
 
 	default:
