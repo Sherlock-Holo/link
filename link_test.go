@@ -52,10 +52,9 @@ func TestLinkClientToServer(t *testing.T) {
 	}()
 
 	clientCfg := DefaultConfig(ClientMode)
-	clientCfg.DebugLog = false
-
+	clientCfg.DebugLog = true
 	serverCfg := DefaultConfig(ServerMode)
-	serverCfg.DebugLog = false
+	serverCfg.DebugLog = true
 
 	clientManager := NewManager(client, clientCfg)
 	serverManager := NewManager(server, serverCfg)
@@ -101,10 +100,7 @@ func TestLinkServerToClient(t *testing.T) {
 	}()
 
 	clientCfg := DefaultConfig(ClientMode)
-	clientCfg.DebugLog = false
-
 	serverCfg := DefaultConfig(ServerMode)
-	serverCfg.DebugLog = false
 
 	clientManager := NewManager(client, clientCfg)
 	serverManager := NewManager(server, serverCfg)
@@ -121,11 +117,6 @@ func TestLinkServerToClient(t *testing.T) {
 		}
 		defer link.Close()
 
-		// need to run before Write, read the byte which client written
-		if _, err := link.Read(make([]byte, 1)); err != nil {
-			t.Fatalf("server read init data failed: %+v", err)
-		}
-
 		if _, err := link.Write(fileB); err != nil {
 			t.Fatalf("server write fileB failed: %+v", err)
 		}
@@ -137,11 +128,6 @@ func TestLinkServerToClient(t *testing.T) {
 		t.Fatalf("client dial failed: %+v", err)
 	}
 	defer link.Close()
-
-	// need to run before ReadAll, ensure server know client wants to create a link
-	if _, err := link.Write([]byte{1}); err != nil {
-		t.Fatalf("client write init data failed: %+v", err)
-	}
 
 	b, err := ioutil.ReadAll(link)
 	if err != nil {

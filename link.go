@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	bufSize          = 768 * 1024
 	ackPayloadLength = 2
 )
 
@@ -39,10 +38,8 @@ type link struct {
 	// rst int32
 	eof sync.Once
 
-	readDLLock    sync.Mutex
-	writeDLLock   sync.Mutex
-	readDeadline  time.Time
-	writeDeadline time.Time
+	readDeadline  atomic.Value // time.Time
+	writeDeadline atomic.Value // time.Time
 
 	dialCtx     context.Context
 	dialCtxFunc context.CancelFunc
@@ -56,15 +53,18 @@ func newLink(id uint32, m *manager, mode mode) *link {
 
 		manager: m,
 
-		buf: bytes.NewBuffer(make([]byte, 0, bufSize)),
+		buf: bytes.NewBuffer(make([]byte, 0, m.cfg.ReadBufSize)),
 
 		readEvent: make(chan struct{}, 1),
 
-		writeWind:  bufSize,
+		writeWind:  m.cfg.WriteBufSize,
 		writeEvent: make(chan struct{}, 1),
 	}
 
 	link.ctx, link.ctxCloseFunc = context.WithCancel(m.ctx)
+
+	link.readDeadline.Store(time.Time{})
+	link.writeDeadline.Store(time.Time{})
 
 	if mode == ClientMode {
 		link.dialCtx, link.dialCtxFunc = context.WithCancel(context.Background())
@@ -133,10 +133,8 @@ func (l *link) pushPacket(p *Packet) {
 }
 
 func (l *link) Read(p []byte) (n int, err error) {
-	l.readDLLock.Lock()
-	timeout := !l.readDeadline.IsZero() && time.Now().After(l.readDeadline)
-	l.readDLLock.Unlock()
-	if timeout {
+	readDeadline := l.readDeadline.Load().(time.Time)
+	if !readDeadline.IsZero() && time.Now().After(readDeadline) {
 		return 0, ErrTimeout
 	}
 
@@ -163,12 +161,11 @@ func (l *link) Read(p []byte) (n int, err error) {
 			return
 		}
 
-		l.readDLLock.Lock()
 		timeoutCtx := context.Background()
-		if !l.readDeadline.IsZero() {
-			timeoutCtx, _ = context.WithTimeout(context.Background(), l.readDeadline.Sub(time.Now()))
+		readDeadline = l.readDeadline.Load().(time.Time)
+		if !readDeadline.IsZero() {
+			timeoutCtx, _ = context.WithTimeout(context.Background(), readDeadline.Sub(time.Now()))
 		}
-		l.readDLLock.Unlock()
 
 		select {
 		case <-l.ctx.Done():
@@ -200,10 +197,8 @@ func (l *link) Read(p []byte) (n int, err error) {
 }
 
 func (l *link) Write(p []byte) (int, error) {
-	l.writeDLLock.Lock()
-	timeout := !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline)
-	l.writeDLLock.Unlock()
-	if timeout {
+	writeDeadline := l.writeDeadline.Load().(time.Time)
+	if !writeDeadline.IsZero() && time.Now().After(writeDeadline) {
 		return 0, ErrTimeout
 	}
 
@@ -255,13 +250,14 @@ func (l *link) Close() error {
 
 // closeByPeer when link is closed by peer, closeByPeer will be called.
 func (l *link) closeByPeer() {
-	select {
+	/*select {
 	case <-l.ctx.Done():
 		return
 	default:
 		l.ctxCloseFunc()
-	}
+	}*/
 
+	l.ctxCloseFunc()
 	l.manager.removeLink(l.ID)
 }
 
@@ -304,17 +300,8 @@ func (l *link) SetDeadline(t time.Time) error {
 	default:
 	}
 
-	l.readDLLock.Lock()
-	l.writeDLLock.Lock()
-	defer func() {
-		l.readDLLock.Unlock()
-		l.writeDLLock.Unlock()
-	}()
-
-	if !t.IsZero() {
-		l.readDeadline = t
-		l.writeDeadline = t
-	}
+	l.readDeadline.Store(t)
+	l.writeDeadline.Store(t)
 	return nil
 }
 
@@ -325,12 +312,7 @@ func (l *link) SetReadDeadline(t time.Time) error {
 	default:
 	}
 
-	l.readDLLock.Lock()
-	defer l.readDLLock.Unlock()
-
-	if !t.IsZero() {
-		l.readDeadline = t
-	}
+	l.readDeadline.Store(t)
 	return nil
 }
 
@@ -341,11 +323,6 @@ func (l *link) SetWriteDeadline(t time.Time) error {
 	default:
 	}
 
-	l.writeDLLock.Lock()
-	defer l.writeDLLock.Unlock()
-
-	if !t.IsZero() {
-		l.writeDeadline = t
-	}
+	l.writeDeadline.Store(t)
 	return nil
 }

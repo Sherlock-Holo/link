@@ -32,17 +32,13 @@ type manager struct {
 
 	acceptQueue chan *link // accept queue, call Accept() will get a waiting link
 
-	interval time.Duration // keepalive interval
-
 	timeoutTimer  *time.Timer // timer check if the manager is timeout
 	timeout       time.Duration
 	initTimerOnce sync.Once // make sure Timer init once
 
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
 
-	debugLog bool
-
-	mode mode // manager run mode
+	cfg Config
 }
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
@@ -54,22 +50,18 @@ func NewManager(conn net.Conn, config Config) Manager {
 		usedIDs: make(map[uint32]bool),
 
 		writes: make(chan writeRequest, 1),
+
+		cfg: config,
 	}
 
 	manager.ctx, manager.ctxCloseFunc = context.WithCancel(context.Background())
 
-	manager.debugLog = config.DebugLog
+	manager.acceptQueue = make(chan *link, manager.cfg.AcceptQueueSize)
 
-	manager.mode = config.Mode
-
-	manager.acceptQueue = make(chan *link, config.AcceptQueueSize)
-
-	if manager.mode == ClientMode && manager.interval > 0 {
+	if manager.cfg.Mode == ClientMode && manager.cfg.KeepaliveInterval > 0 {
 		manager.initTimerOnce.Do(func() {
 			if config.KeepaliveInterval > 0 {
-				manager.interval = config.KeepaliveInterval
-				manager.timeout = 2 * manager.interval
-
+				manager.timeout = 2 * manager.cfg.KeepaliveInterval
 				manager.keepaliveTicker = time.NewTicker(config.KeepaliveInterval)
 
 				go manager.keepAlive()
@@ -102,13 +94,13 @@ func (m *manager) keepAlive() {
 	defer m.keepaliveTicker.Stop()
 
 	writePing := func() error {
-		ping := newPacket(127, PING, []byte{byte(m.interval.Seconds())})
+		ping := newPacket(127, PING, []byte{byte(m.cfg.KeepaliveInterval.Seconds())})
 		return m.writePacket(ping)
 	}
 
 	for range m.keepaliveTicker.C {
 		if err := writePing(); err != nil {
-			if m.debugLog {
+			if m.cfg.DebugLog {
 				log.Printf("send ping failed: %+v", err)
 			}
 			return
@@ -183,7 +175,7 @@ func (m *manager) readLoop() {
 
 		if m.timeout > 0 {
 			if err := m.conn.SetReadDeadline(time.Now().Add(m.timeout)); err != nil {
-				if m.debugLog {
+				if m.cfg.DebugLog {
 					log.Printf("set read dealine failed: %+v", errors.WithStack(err))
 				}
 				m.Close()
@@ -193,7 +185,7 @@ func (m *manager) readLoop() {
 
 		packet, err := m.readPacket()
 		if err != nil {
-			if m.debugLog {
+			if m.cfg.DebugLog {
 				log.Printf("read packet failed: %+v", err)
 			}
 			m.Close()
@@ -203,7 +195,7 @@ func (m *manager) readLoop() {
 		switch packet.CMD {
 		case NEW:
 			if !(m.usedIDs[packet.ID]) {
-				link := newLink(packet.ID, m, m.mode)
+				link := newLink(packet.ID, m, m.cfg.Mode)
 				m.usedIDs[packet.ID] = true
 				m.links.Store(link.ID, link)
 
@@ -211,23 +203,6 @@ func (m *manager) readLoop() {
 
 				m.acceptQueue <- link
 			}
-
-		/*case PSH:
-		if l, ok := m.links.Load(packet.ID); ok {
-			l.(*link).pushPacket(packet)
-		} else {
-			// check id is used or not,
-			// make sure don't miss id and don't reopen a closed link.
-			if !(m.usedIDs[packet.ID]) {
-				link := dial(packet.ID, m)
-				m.usedIDs[packet.ID] = true
-				m.links.Store(link.ID, link)
-
-				link.pushPacket(packet)
-
-				m.acceptQueue <- link
-			}
-		}*/
 
 		case PSH, ACK, CLOSE:
 			if l, ok := m.links.Load(packet.ID); ok {
@@ -236,10 +211,10 @@ func (m *manager) readLoop() {
 
 		case PING:
 			m.initTimerOnce.Do(func() {
-				m.interval = time.Duration(packet.Payload[0]) * time.Second
-				m.timeout = 2 * m.interval
+				m.cfg.KeepaliveInterval = time.Duration(packet.Payload[0]) * time.Second
+				m.timeout = 2 * m.cfg.KeepaliveInterval
 
-				m.keepaliveTicker = time.NewTicker(m.interval)
+				m.keepaliveTicker = time.NewTicker(m.cfg.KeepaliveInterval)
 				go m.keepAlive()
 			})
 		}
@@ -253,10 +228,9 @@ func (m *manager) writeLoop() {
 		case <-m.ctx.Done():
 			return
 		case req := <-m.writes:
-			bytes := req.packet.bytes()
-			if _, err := m.conn.Write(bytes); err != nil {
-				if m.debugLog {
-					log.Println("manager writeLoop:", err)
+			if _, err := m.conn.Write(req.packet.bytes()); err != nil {
+				if m.cfg.DebugLog {
+					log.Printf("manager writeLoop failed: %+v", errors.WithStack(err))
 				}
 				m.Close()
 
@@ -274,7 +248,7 @@ func (m *manager) Dial(ctx context.Context) (Link, error) {
 }
 
 func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
-	link := newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m, m.mode)
+	link := newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m, m.cfg.Mode)
 
 	select {
 	case <-m.ctx.Done():
@@ -290,8 +264,14 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 
 		select {
 		case <-ctx.Done():
+			var err error
+			if ctx.Err() == context.DeadlineExceeded {
+				err = ErrTimeout
+			} else {
+				err = errors.WithStack(err)
+			}
 			m.Close()
-			return nil, errors.WithStack(ctx.Err())
+			return nil, err
 
 		case <-link.dialCtx.Done():
 			return link, nil
@@ -304,7 +284,8 @@ func (m *manager) Accept() (Link, error) {
 	var l *link
 	select {
 	case <-m.ctx.Done():
-		return nil, errors.New("broken manager")
+		return nil, ErrManagerClosed
+
 	case l = <-m.acceptQueue:
 		ackNewPacket := newPacket(l.ID, ACK, nil)
 		if err := m.writePacket(ackNewPacket); err != nil {
