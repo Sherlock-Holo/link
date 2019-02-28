@@ -296,7 +296,7 @@ func (m *manager) Accept() (Link, error) {
 
 	case l = <-m.acceptQueue:
 		readableBufSize := make([]byte, 4)
-		size := atomic.LoadInt32(&l.bufSize)
+		size := atomic.LoadInt32(&l.readableBufSize)
 		if size < 0 {
 			size = 0
 		}

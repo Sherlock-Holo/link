@@ -25,10 +25,10 @@ type link struct {
 
 	manager *manager
 
-	buf       *bytes.Buffer
-	bufSize   int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
-	bufLock   sync.Mutex
-	readEvent chan struct{} // notify Read link has some data to be read, manager.readLoop and Read may notify it by call readAvailable
+	buf             *bytes.Buffer
+	readableBufSize int32 // add it to improve performance, by using atomic instead of read buf.Len() with bufLock
+	bufLock         sync.Mutex
+	readEvent       chan struct{} // notify Read link has some data to be read, manager.readLoop and Read may notify it by call readAvailable
 
 	// when writeWind < 0, Link.Write will be blocked
 	writeWind  int32
@@ -52,7 +52,8 @@ func newLink(id uint32, m *manager, mode mode) *link {
 
 		manager: m,
 
-		buf: bytes.NewBuffer(make([]byte, 0, m.cfg.ReadBufSize)),
+		buf:             bytes.NewBuffer(make([]byte, 0, m.cfg.ReadBufSize)),
+		readableBufSize: m.cfg.ReadBufSize,
 
 		readEvent:  make(chan struct{}, 1),
 		writeEvent: make(chan struct{}, 1),
@@ -98,7 +99,7 @@ func (l *link) pushBytes(p []byte) {
 	l.buf.Write(p)
 	l.bufLock.Unlock()
 
-	atomic.AddInt32(&l.bufSize, int32(len(p)))
+	atomic.AddInt32(&l.readableBufSize, -int32(len(p)))
 	l.readAvailable()
 }
 
@@ -114,11 +115,6 @@ func (l *link) pushPacket(p *Packet) {
 		l.pushBytes(p.Payload[4:])
 
 	case ACK:
-		/*// if ACK packet has error payload, it will be ignored.
-		if p.PayloadLength != ackPayloadLength {
-			return
-		}*/
-
 		atomic.StoreInt32(&l.writeWind, int32(binary.BigEndian.Uint32(p.Payload)))
 		if atomic.LoadInt32(&l.writeWind) > 0 {
 			l.writeAvailable()
@@ -150,7 +146,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 		l.bufLock.Unlock()
 
 		if n > 0 {
-			atomic.AddInt32(&l.bufSize, -int32(n))
+			atomic.AddInt32(&l.readableBufSize, int32(n))
 
 			select {
 			case <-l.ctx.Done():
@@ -258,7 +254,7 @@ func (l *link) closeByPeer() {
 // sendACK check if n > 65535, if n > 65535 will send more then 1 ACK packet.
 func (l *link) sendACK() {
 	buf := make([]byte, ackPayloadLength)
-	size := atomic.LoadInt32(&l.bufSize)
+	size := atomic.LoadInt32(&l.readableBufSize)
 	if size < 0 {
 		size = 0
 	}
