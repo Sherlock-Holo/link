@@ -278,7 +278,7 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 
 	select {
 	case <-m.ctx.Done():
-		return nil, errors.New("manager closed")
+		return nil, ErrManagerClosed
 
 	default:
 		m.links.Store(link.ID, link)
