@@ -8,7 +8,7 @@ const (
 	ClientMode mode = iota
 	ServerMode
 
-	defaultReadBufSize  = 768 * 1024
+	defaultReadBufSize  = 256 * 1024
 	defaultWriteBufSize = 64 * 1024
 )
 
