@@ -43,11 +43,14 @@ type link struct {
 	writeDLLock   sync.Mutex
 	readDeadline  time.Time
 	writeDeadline time.Time
+
+	dialCtx     context.Context
+	dialCtxFunc context.CancelFunc
 }
 
-// dial will create a Link, but the Link isn't created at other side,
+// newLink will create a Link, but the Link isn't created at other side,
 // user should write some data to let other side create the link.
-func dial(id uint32, m *manager) *link {
+func newLink(id uint32, m *manager, mode mode) *link {
 	link := &link{
 		ID: id,
 
@@ -62,6 +65,10 @@ func dial(id uint32, m *manager) *link {
 	}
 
 	link.ctx, link.ctxCloseFunc = context.WithCancel(m.ctx)
+
+	if mode == ClientMode {
+		link.dialCtx, link.dialCtxFunc = context.WithCancel(context.Background())
+	}
 
 	link.writeAvailable()
 
@@ -86,6 +93,10 @@ func (l *link) writeAvailable() {
 
 // pushBytes push some data to link.buf.
 func (l *link) pushBytes(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+
 	l.bufLock.Lock()
 	l.buf.Write(p)
 	l.bufLock.Unlock()
@@ -98,10 +109,15 @@ func (l *link) pushBytes(p []byte) {
 // manager calls pushPacket to let link handles that packet.
 func (l *link) pushPacket(p *Packet) {
 	switch p.CMD {
-	case PSH:
+	case PSH, NEW:
 		l.pushBytes(p.Payload)
 
 	case ACK:
+		// dial ok
+		if l.dialCtx != nil {
+			l.dialCtxFunc()
+		}
+
 		// if ACK packet has error payload, it will be ignored.
 		if p.PayloadLength != ackPayloadLength {
 			return
@@ -126,28 +142,6 @@ func (l *link) Read(p []byte) (n int, err error) {
 
 	// we should not pass a 0 length buffer into Read(p []byte), if so will always return (0, nil)
 	if len(p) == 0 {
-		/*select {
-		case <-l.ctx.Done():
-			if atomic.LoadInt32(&l.bufSize) > 0 {
-				return 0, nil
-			}
-			err = io.ErrClosedPipe
-
-			select {
-			case <-l.manager.ctx.Done():
-				return 0, ErrManagerClosed
-			default:
-			}
-
-			l.eof.Do(func() {
-				err = io.EOF
-			})
-
-			return
-
-		default:
-			return 0, nil
-		}*/
 		return 0, nil
 	}
 
@@ -170,30 +164,29 @@ func (l *link) Read(p []byte) (n int, err error) {
 		}
 
 		l.readDLLock.Lock()
-		var readDeadline time.Time
+		timeoutCtx := context.Background()
 		if !l.readDeadline.IsZero() {
-			readDeadline = l.readDeadline
+			timeoutCtx, _ = context.WithTimeout(context.Background(), l.readDeadline.Sub(time.Now()))
 		}
 		l.readDLLock.Unlock()
-
-		timeoutCtx := context.Background()
-		if !readDeadline.IsZero() {
-			timeoutCtx, _ = context.WithTimeout(context.Background(), readDeadline.Sub(time.Now()))
-		}
 
 		select {
 		case <-l.ctx.Done():
 			err = io.ErrClosedPipe
+
+			l.eof.Do(func() {
+				err = io.EOF
+			})
+
+			if err == io.EOF {
+				return
+			}
 
 			select {
 			case <-l.manager.ctx.Done():
 				return 0, ErrManagerClosed
 			default:
 			}
-
-			l.eof.Do(func() {
-				err = io.EOF
-			})
 
 			return
 
@@ -213,27 +206,9 @@ func (l *link) Write(p []byte) (int, error) {
 	if timeout {
 		return 0, ErrTimeout
 	}
-	/*if !l.writeDeadline.IsZero() && time.Now().After(l.writeDeadline) {
-		l.writeDLLock.RUnlock()
-		return 0, iotest.ErrTimeout
-	} else {
-		l.writeDLLock.RUnlock()
-	}*/
 
 	// we should not pass a 0 length buffer into Write(p []byte), if so will always return (0, nil)
 	if len(p) == 0 {
-		/*select {
-		case <-l.ctx.Done():
-			select {
-			case <-l.manager.ctx.Done():
-				return 0, ErrManagerClosed
-			default:
-			}
-
-			return 0, io.ErrClosedPipe
-		default:
-			return 0, nil
-		}*/
 		return 0, nil
 	}
 

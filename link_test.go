@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"io/ioutil"
 	"net"
 	"sync"
@@ -65,7 +66,7 @@ func TestLinkClientToServer(t *testing.T) {
 	}
 
 	go func() {
-		link, err := clientManager.Dial()
+		link, err := clientManager.Dial(context.Background())
 		if err != nil {
 			t.Fatalf("client dial failed: %+v", err)
 		}
@@ -88,7 +89,7 @@ func TestLinkClientToServer(t *testing.T) {
 	}
 
 	if string(b) != string(fileB) {
-		t.Fatal("data verify failed")
+		t.Fatalf("data verify failed, receive:\n%s\n want:\n%s", string(b), string(fileB))
 	}
 }
 
@@ -131,7 +132,7 @@ func TestLinkServerToClient(t *testing.T) {
 
 	}()
 
-	link, err := clientManager.Dial()
+	link, err := clientManager.Dial(context.Background())
 	if err != nil {
 		t.Fatalf("client dial failed: %+v", err)
 	}
@@ -148,6 +149,6 @@ func TestLinkServerToClient(t *testing.T) {
 	}
 
 	if string(b) != string(fileB) {
-		t.Fatal("data verify failed")
+		t.Fatalf("data verify failed, receive:\n%s\n want:\n%s", string(b), string(fileB))
 	}
 }

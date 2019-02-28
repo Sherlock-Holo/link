@@ -201,24 +201,35 @@ func (m *manager) readLoop() {
 		}
 
 		switch packet.CMD {
-		case PSH:
-			if l, ok := m.links.Load(packet.ID); ok {
-				l.(*link).pushPacket(packet)
-			} else {
-				// check id is used or not,
-				// make sure don't miss id and don't reopen a closed link.
-				if !(m.usedIDs[packet.ID]) {
-					link := dial(packet.ID, m)
-					m.usedIDs[packet.ID] = true
-					m.links.Store(link.ID, link)
+		case NEW:
+			if !(m.usedIDs[packet.ID]) {
+				link := newLink(packet.ID, m, m.mode)
+				m.usedIDs[packet.ID] = true
+				m.links.Store(link.ID, link)
 
-					link.pushPacket(packet)
+				link.pushPacket(packet)
 
-					m.acceptQueue <- link
-				}
+				m.acceptQueue <- link
 			}
 
-		case ACK, CLOSE:
+		/*case PSH:
+		if l, ok := m.links.Load(packet.ID); ok {
+			l.(*link).pushPacket(packet)
+		} else {
+			// check id is used or not,
+			// make sure don't miss id and don't reopen a closed link.
+			if !(m.usedIDs[packet.ID]) {
+				link := dial(packet.ID, m)
+				m.usedIDs[packet.ID] = true
+				m.links.Store(link.ID, link)
+
+				link.pushPacket(packet)
+
+				m.acceptQueue <- link
+			}
+		}*/
+
+		case PSH, ACK, CLOSE:
 			if l, ok := m.links.Load(packet.ID); ok {
 				l.(*link).pushPacket(packet)
 			}
@@ -258,25 +269,48 @@ func (m *manager) writeLoop() {
 }
 
 // Dial create a Link, if manager is closed, err != nil.
-func (m *manager) Dial() (Link, error) {
-	link := dial(uint32(atomic.AddInt32(&m.maxID, 1)), m)
+func (m *manager) Dial(ctx context.Context) (Link, error) {
+	return m.DialData(ctx, nil)
+}
+
+func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
+	link := newLink(uint32(atomic.AddInt32(&m.maxID, 1)), m, m.mode)
 
 	select {
 	case <-m.ctx.Done():
 		return nil, errors.New("manager closed")
+
 	default:
 		m.links.Store(link.ID, link)
-		return link, nil
+
+		newP := newPacket(link.ID, NEW, b)
+		if err := m.writePacket(newP); err != nil {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			m.Close()
+			return nil, errors.WithStack(ctx.Err())
+
+		case <-link.dialCtx.Done():
+			return link, nil
+		}
 	}
 }
 
 // Accept accept a new Link, if manager is closed, err != nil.
-func (m *manager) Accept() (link Link, err error) {
+func (m *manager) Accept() (Link, error) {
+	var l *link
 	select {
 	case <-m.ctx.Done():
 		return nil, errors.New("broken manager")
-	case link = <-m.acceptQueue:
-		return link, nil
+	case l = <-m.acceptQueue:
+		ackNewPacket := newPacket(l.ID, ACK, nil)
+		if err := m.writePacket(ackNewPacket); err != nil {
+			return nil, err
+		}
+		return l, nil
 	}
 }
 
