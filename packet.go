@@ -134,10 +134,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	b := make([]byte, HeaderWithoutPayloadLength+1)
 
 	if _, err := io.ReadFull(r, b); err != nil {
-		if err == io.ErrUnexpectedEOF {
-			return nil, ErrLinkClosed
-		}
-		return nil, errors.WithStack(err)
+		return nil, ErrManagerClosed
 	}
 
 	p := new(Packet)
@@ -174,10 +171,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 		b = b[:2]
 
 		if _, err := io.ReadFull(r, b); err != nil {
-			if err == io.ErrUnexpectedEOF {
-				return nil, ErrLinkClosed
-			}
-			return nil, errors.WithStack(err)
+			return nil, ErrManagerClosed
 		}
 
 		p.middlePayloadLength = binary.BigEndian.Uint16(b)
@@ -188,10 +182,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 		b = b[:4]
 
 		if _, err := io.ReadFull(r, b); err != nil {
-			if err == io.ErrUnexpectedEOF {
-				return nil, ErrLinkClosed
-			}
-			return nil, errors.WithStack(err)
+			return nil, ErrManagerClosed
 		}
 
 		p.longPayloadLength = binary.BigEndian.Uint32(b)
@@ -200,10 +191,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	}
 
 	if _, err := io.ReadFull(r, p.Payload); err != nil {
-		if err == io.ErrUnexpectedEOF {
-			return nil, ErrLinkClosed
-		}
-		return nil, errors.WithStack(err)
+		return nil, ErrManagerClosed
 	}
 
 	return p, nil

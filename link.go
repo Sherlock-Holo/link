@@ -42,6 +42,8 @@ type link struct {
 
 	dialCtx     context.Context
 	dialCtxFunc context.CancelFunc
+
+	closeOnce sync.Once
 }
 
 // newLink will create a Link, but the Link isn't created at other side,
@@ -228,21 +230,26 @@ func (l *link) Write(p []byte) (int, error) {
 }
 
 // Close close the link.
-func (l *link) Close() error {
+func (l *link) Close() (err error) {
 	select {
 	case <-l.ctx.Done():
-		return nil
+		// fast path
+		return ErrLinkClosed
+
 	default:
+	}
+
+	err = ErrLinkClosed
+
+	l.closeOnce.Do(func() {
 		l.ctxCloseFunc()
-	}
 
-	l.manager.removeLink(l.ID)
+		l.manager.removeLink(l.ID)
 
-	if err := l.manager.writePacket(newPacket(l.ID, CLOSE, nil)); err != nil {
-		return ErrManagerClosed
-	}
+		err = l.manager.writePacket(newPacket(l.ID, CLOSE, nil))
+	})
 
-	return nil
+	return err
 }
 
 // closeByPeer when link is closed by peer, closeByPeer will be called.
