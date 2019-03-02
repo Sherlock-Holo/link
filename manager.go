@@ -229,12 +229,21 @@ func (m *manager) writeLoop() {
 		case <-m.ctx.Done():
 			return
 		case req := <-m.writes:
+			if m.cfg.KeepaliveInterval != 0 {
+				if err := m.conn.SetWriteDeadline(time.Now().Add(m.cfg.KeepaliveInterval)); err != nil {
+					if m.cfg.DebugLog {
+						log.Printf("manager set write deadline failed: %+v", errors.WithStack(err))
+					}
+					m.Close()
+					return
+				}
+			}
+
 			if _, err := m.conn.Write(req.packet.bytes()); err != nil {
 				if m.cfg.DebugLog {
 					log.Printf("manager writeLoop failed: %+v", errors.WithStack(err))
 				}
 				m.Close()
-
 				return
 			}
 
@@ -278,7 +287,7 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 			} else {
 				err = errors.WithStack(err)
 			}
-			m.Close()
+
 			return nil, err
 
 		case <-link.dialCtx.Done():
