@@ -6,7 +6,7 @@ import (
 	"io"
 	"net"
 
-	"github.com/pkg/errors"
+	"golang.org/x/xerrors"
 )
 
 type Cmd = uint8
@@ -142,7 +142,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	p.Version = b[0]
 
 	if p.Version != Version {
-		return nil, errors.WithStack(ErrVersion{
+		return nil, xerrors.Errorf("decodeFrom failed: %w", ErrVersion{
 			Receive:     p.Version,
 			NeedVersion: Version,
 		})
@@ -157,7 +157,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 		p.CMD = cmdByte
 
 	default:
-		return nil, errors.WithStack(ErrCmd{Receive: cmdByte})
+		return nil, xerrors.Errorf("decodeFrom failed: %w", ErrCmd{Receive: cmdByte})
 	}
 
 	p.shortPayloadLength = b[HeaderWithoutPayloadLength]

@@ -3,13 +3,12 @@ package link
 import (
 	"context"
 	"encoding/binary"
+	"golang.org/x/xerrors"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 type writeRequest struct {
@@ -157,7 +156,7 @@ func (m *manager) Close() (err error) {
 		}
 	}
 
-	return errors.WithStack(m.conn.Close())
+	return xerrors.Errorf("manager close failed: %w", err)
 }
 
 // removeLink recv FIN and send FIN will remove link.
@@ -177,7 +176,7 @@ func (m *manager) readLoop() {
 		if m.timeout > 0 {
 			if err := m.conn.SetReadDeadline(time.Now().Add(m.timeout)); err != nil {
 				if m.cfg.DebugLog {
-					log.Printf("set read dealine failed: %+v", errors.WithStack(err))
+					log.Printf("%+v", xerrors.Errorf("set read deadline failed: %w", err))
 				}
 				m.Close()
 				return
@@ -232,7 +231,7 @@ func (m *manager) writeLoop() {
 			if m.cfg.KeepaliveInterval != 0 {
 				if err := m.conn.SetWriteDeadline(time.Now().Add(m.cfg.KeepaliveInterval)); err != nil {
 					if m.cfg.DebugLog {
-						log.Printf("manager set write deadline failed: %+v", errors.WithStack(err))
+						log.Printf("%+v", xerrors.Errorf("manager set write deadline failed: %w", err))
 					}
 					m.Close()
 					return
@@ -241,7 +240,7 @@ func (m *manager) writeLoop() {
 
 			if _, err := m.conn.Write(req.packet.bytes()); err != nil {
 				if m.cfg.DebugLog {
-					log.Printf("manager writeLoop failed: %+v", errors.WithStack(err))
+					log.Printf("%+v", xerrors.Errorf("manager writeLoop failed: %w", err))
 				}
 				m.Close()
 				return
@@ -282,10 +281,12 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 		select {
 		case <-ctx.Done():
 			var err error
-			if ctx.Err() == context.DeadlineExceeded {
-				err = ErrTimeout
-			} else {
-				err = errors.WithStack(err)
+			switch ctx.Err() {
+			case context.DeadlineExceeded:
+				err = xerrors.Errorf("DialData failed: %w", ErrTimeout)
+
+			default:
+				err = xerrors.Errorf("DialData failed: %w", ctx.Err())
 			}
 
 			return nil, err

@@ -3,13 +3,13 @@ package link
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
+	"golang.org/x/xerrors"
 )
 
 var (
-	ErrManagerClosed = errors.New("manager is closed")
-	ErrLinkClosed    = errors.New("link is closed")
-	ErrTimeout       = errors.New("io timeout")
+	ErrManagerClosed = xerrors.New("manager is closed")
+	ErrLinkClosed    = xerrors.New("link is closed")
+	ErrTimeout       = xerrors.New("io timeout")
 )
 
 type ErrVersion struct {

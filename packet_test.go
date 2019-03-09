@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
+	"golang.org/x/xerrors"
 )
 
 type testConn struct {
@@ -18,7 +18,7 @@ type testConn struct {
 
 func (tc *testConn) Read(b []byte) (n int, err error) {
 	n, err = tc.r.Read(b)
-	err = errors.WithStack(err)
+	err = xerrors.Errorf("testConn read failed: %w", err)
 	return
 }
 
