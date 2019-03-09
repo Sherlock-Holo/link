@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/xerrors"
 )
 
 const (
@@ -134,7 +136,7 @@ func (l *link) pushPacket(p *Packet) {
 func (l *link) Read(p []byte) (n int, err error) {
 	readDeadline := l.readDeadline.Load().(time.Time)
 	if !readDeadline.IsZero() && time.Now().After(readDeadline) {
-		return 0, ErrTimeout
+		return 0, xerrors.Errorf("link read failed: %w", ErrTimeout)
 	}
 
 	// we should not pass a 0 length buffer into Read(p []byte), if so will always return (0, nil)
@@ -144,7 +146,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 
 	for {
 		l.bufLock.Lock()
-		n, err = l.buf.Read(p)
+		n, _ = l.buf.Read(p)
 		l.bufLock.Unlock()
 
 		if n > 0 {
@@ -168,7 +170,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 
 		select {
 		case <-l.ctx.Done():
-			err = io.ErrClosedPipe
+			err = xerrors.Errorf("link read failed: %w", io.ErrClosedPipe)
 
 			l.eof.Do(func() {
 				err = io.EOF
@@ -180,7 +182,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 
 			select {
 			case <-l.manager.ctx.Done():
-				return 0, ErrManagerClosed
+				return 0, xerrors.Errorf("link read failed: %w", ErrManagerClosed)
 			default:
 			}
 
@@ -190,7 +192,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 		// wait for peer writing data
 
 		case <-timeoutCtx.Done():
-			return 0, ErrTimeout
+			return 0, xerrors.Errorf("link read failed: %w", ErrTimeout)
 		}
 	}
 }
@@ -198,7 +200,7 @@ func (l *link) Read(p []byte) (n int, err error) {
 func (l *link) Write(p []byte) (int, error) {
 	writeDeadline := l.writeDeadline.Load().(time.Time)
 	if !writeDeadline.IsZero() && time.Now().After(writeDeadline) {
-		return 0, ErrTimeout
+		return 0, xerrors.Errorf("link write failed: %w", ErrTimeout)
 	}
 
 	// we should not pass a 0 length buffer into Write(p []byte), if so will always return (0, nil)
@@ -210,15 +212,15 @@ func (l *link) Write(p []byte) (int, error) {
 	case <-l.ctx.Done():
 		select {
 		case <-l.manager.ctx.Done():
-			return 0, ErrManagerClosed
+			return 0, xerrors.Errorf("link write failed: %w", ErrManagerClosed)
 		default:
 		}
 
-		return 0, io.ErrClosedPipe
+		return 0, xerrors.Errorf("link write failed: %w", io.ErrClosedPipe)
 
 	case <-l.writeEvent:
 		if err := l.manager.writePacket(newPacket(l.ID, PSH, p)); err != nil {
-			return 0, err
+			return 0, xerrors.Errorf("link write failed: %w", err)
 		}
 
 		if atomic.AddInt32(&l.writeWind, -int32(len(p))) > 0 {
@@ -234,7 +236,7 @@ func (l *link) Close() (err error) {
 	select {
 	case <-l.ctx.Done():
 		// fast path
-		return ErrLinkClosed
+		return xerrors.Errorf("link closed failed: %w", ErrLinkClosed)
 
 	default:
 	}
@@ -249,7 +251,10 @@ func (l *link) Close() (err error) {
 		err = l.manager.writePacket(newPacket(l.ID, CLOSE, nil))
 	})
 
-	return err
+	if err != nil {
+		return xerrors.Errorf("link closed failed: %w", err)
+	}
+	return nil
 }
 
 // closeByPeer when link is closed by peer, closeByPeer will be called.
@@ -284,7 +289,7 @@ func (l *link) RemoteAddr() net.Addr {
 func (l *link) SetDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
-		return ErrLinkClosed
+		return xerrors.Errorf("link set deadline failed: %w", ErrLinkClosed)
 	default:
 	}
 
@@ -296,7 +301,7 @@ func (l *link) SetDeadline(t time.Time) error {
 func (l *link) SetReadDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
-		return ErrLinkClosed
+		return xerrors.Errorf("link set read deadline failed: %w", ErrLinkClosed)
 	default:
 	}
 
@@ -307,7 +312,7 @@ func (l *link) SetReadDeadline(t time.Time) error {
 func (l *link) SetWriteDeadline(t time.Time) error {
 	select {
 	case <-l.ctx.Done():
-		return ErrLinkClosed
+		return xerrors.Errorf("link set write deadline failed: %w", ErrLinkClosed)
 	default:
 	}
 

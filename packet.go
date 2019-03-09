@@ -134,7 +134,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	b := make([]byte, HeaderWithoutPayloadLength+1)
 
 	if _, err := io.ReadFull(r, b); err != nil {
-		return nil, ErrManagerClosed
+		return nil, xerrors.Errorf("decode packet from net.Conn failed: %w", err)
 	}
 
 	p := new(Packet)
@@ -142,7 +142,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	p.Version = b[0]
 
 	if p.Version != Version {
-		return nil, xerrors.Errorf("decodeFrom failed: %w", ErrVersion{
+		return nil, xerrors.Errorf("decode packet from net.Conn failed: %w", ErrVersion{
 			Receive:     p.Version,
 			NeedVersion: Version,
 		})
@@ -157,7 +157,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 		p.CMD = cmdByte
 
 	default:
-		return nil, xerrors.Errorf("decodeFrom failed: %w", ErrCmd{Receive: cmdByte})
+		return nil, xerrors.Errorf("decode packet from net.Conn failed: %w", ErrCmd{Receive: cmdByte})
 	}
 
 	p.shortPayloadLength = b[HeaderWithoutPayloadLength]
@@ -171,7 +171,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 		b = b[:2]
 
 		if _, err := io.ReadFull(r, b); err != nil {
-			return nil, ErrManagerClosed
+			return nil, xerrors.Errorf("decode packet from net.Conn failed: %w", err)
 		}
 
 		p.middlePayloadLength = binary.BigEndian.Uint16(b)
@@ -182,7 +182,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 		b = b[:4]
 
 		if _, err := io.ReadFull(r, b); err != nil {
-			return nil, ErrManagerClosed
+			return nil, xerrors.Errorf("decode packet from net.Conn failed: %w", err)
 		}
 
 		p.longPayloadLength = binary.BigEndian.Uint32(b)
@@ -191,7 +191,7 @@ func decodeFrom(r net.Conn) (*Packet, error) {
 	}
 
 	if _, err := io.ReadFull(r, p.Payload); err != nil {
-		return nil, ErrManagerClosed
+		return nil, xerrors.Errorf("decode packet from net.Conn failed: %w", err)
 	}
 
 	return p, nil

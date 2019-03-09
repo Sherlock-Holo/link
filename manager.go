@@ -39,6 +39,8 @@ type manager struct {
 	keepaliveTicker *time.Ticker // ticker will send ping regularly
 
 	cfg Config
+
+	closeOnce sync.Once
 }
 
 // NewManager create a manager based on conn, if config is nil, will use DefaultConfig.
@@ -110,7 +112,11 @@ func (m *manager) keepAlive() {
 
 // readPacket read a packet from the underlayer conn.
 func (m *manager) readPacket() (*Packet, error) {
-	return decodeFrom(m.conn)
+	if packet, err := decodeFrom(m.conn); err != nil {
+		return nil, xerrors.Errorf("read packet failed: %w", err)
+	} else {
+		return packet, nil
+	}
 }
 
 // writePacket write a packet to other side over the underlayer conn.
@@ -122,13 +128,13 @@ func (m *manager) writePacket(p *Packet) error {
 
 	select {
 	case <-m.ctx.Done():
-		return ErrManagerClosed
+		return xerrors.Errorf("write packet failed: %w", ErrManagerClosed)
 	case m.writes <- req:
 	}
 
 	select {
 	case <-m.ctx.Done():
-		return ErrManagerClosed
+		return xerrors.Errorf("write packet failed: %w", ErrManagerClosed)
 	case <-req.written:
 		return nil
 	}
@@ -138,25 +144,33 @@ func (m *manager) writePacket(p *Packet) error {
 func (m *manager) Close() (err error) {
 	select {
 	case <-m.ctx.Done():
-		return
+		// fast path
+		return xerrors.Errorf("manager close failed: %w", ErrManagerClosed)
+
 	default:
 		m.ctxCloseFunc()
 	}
 
-	m.links.Range(func(_, value interface{}) bool {
-		value.(*link).closeByPeer()
-		return true
+	err = xerrors.Errorf("manager close failed: %w", ErrManagerClosed)
+
+	m.closeOnce.Do(func() {
+		m.links.Range(func(_, value interface{}) bool {
+			value.(*link).closeByPeer()
+			return true
+		})
+
+		if m.keepaliveTicker != nil {
+			m.keepaliveTicker.Stop()
+			select {
+			case <-m.keepaliveTicker.C:
+			default:
+			}
+		}
+
+		err = nil
 	})
 
-	if m.keepaliveTicker != nil {
-		m.keepaliveTicker.Stop()
-		select {
-		case <-m.keepaliveTicker.C:
-		default:
-		}
-	}
-
-	return xerrors.Errorf("manager close failed: %w", err)
+	return
 }
 
 // removeLink recv FIN and send FIN will remove link.
@@ -186,7 +200,7 @@ func (m *manager) readLoop() {
 		packet, err := m.readPacket()
 		if err != nil {
 			if m.cfg.DebugLog {
-				log.Printf("read packet failed: %+v", err)
+				log.Printf("%v", xerrors.Errorf("read packet failed: %w", err))
 			}
 			m.Close()
 			return
@@ -240,7 +254,7 @@ func (m *manager) writeLoop() {
 
 			if _, err := m.conn.Write(req.packet.bytes()); err != nil {
 				if m.cfg.DebugLog {
-					log.Printf("%+v", xerrors.Errorf("manager writeLoop failed: %w", err))
+					log.Printf("%v", xerrors.Errorf("manager writeLoop failed: %w", err))
 				}
 				m.Close()
 				return
@@ -261,7 +275,7 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 
 	select {
 	case <-m.ctx.Done():
-		return nil, ErrManagerClosed
+		return nil, xerrors.Errorf("dial data failed: %w", ErrManagerClosed)
 
 	default:
 		m.links.Store(link.ID, link)
@@ -275,7 +289,7 @@ func (m *manager) DialData(ctx context.Context, b []byte) (Link, error) {
 
 		newP := newPacket(link.ID, NEW, buf)
 		if err := m.writePacket(newP); err != nil {
-			return nil, err
+			return nil, xerrors.Errorf("dial data failed: %w", err)
 		}
 
 		select {
@@ -302,7 +316,7 @@ func (m *manager) Accept() (Link, error) {
 	var l *link
 	select {
 	case <-m.ctx.Done():
-		return nil, ErrManagerClosed
+		return nil, xerrors.Errorf("manager accept failed: %w", ErrManagerClosed)
 
 	case l = <-m.acceptQueue:
 		readableBufSize := make([]byte, 4)
@@ -314,7 +328,7 @@ func (m *manager) Accept() (Link, error) {
 
 		ackNewPacket := newPacket(l.ID, ACPT, readableBufSize)
 		if err := m.writePacket(ackNewPacket); err != nil {
-			return nil, err
+			return nil, xerrors.Errorf("manager accept failed: %w", err)
 		}
 		return l, nil
 	}
